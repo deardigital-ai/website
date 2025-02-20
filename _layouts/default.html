@@ -1,15 +1,27 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ site.lang }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ page.title }} - {{ site.title }}</title>
+    <title>{{ site.translations[site.lang].global.title }}</title>
     <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
+    {% for lang in site.languages %}
+    {% if lang == site.default_lang %}
+    <link rel="alternate" hreflang="{{ lang }}" href="{{ site.url }}{{ page.url }}" />
+    {% else %}
+    <link rel="alternate" hreflang="{{ lang }}" href="{{ site.url }}/{{ lang }}{{ page.url }}" />
+    {% endif %}
+    {% endfor %}
 </head>
 <body>
     <header>
-        <h1><a href="{{ '/' | relative_url }}">{{ site.title }}</a></h1>
-        <p>{{ site.description }}</p>
+        <nav class="language-nav">
+            {% for lang in site.languages %}
+            <a href="{{ site.url }}{% if lang == site.default_lang %}{{ '/' }}{{ page.url }}{% else %}{{ '/' }}{{ lang }}/{{ page.url }}{% endif %}" {% if lang == site.lang %}class="active"{% endif %}>{{ lang | upcase }}</a>
+            {% endfor %}
+        </nav>
+        <h1><a href="{% if site.lang == site.default_lang %}{{ '/' | relative_url }}{% else %}/{{ site.lang }}/{% endif %}">{% t global.title %}</a></h1>
+        <p>{% t global.description %}</p>
     </header>
 
     <main>
@@ -17,7 +29,8 @@
     </main>
 
     <footer>
-        <p>&copy; {{ site.time | date: '%Y' }} {{ site.author }}. All rights reserved.</p>
+        <p>&copy; {{ site.time | date: '%Y' }} {% t global.author %}. {% t footer.all_rights %}</p>
     </footer>
+
 </body>
 </html> 

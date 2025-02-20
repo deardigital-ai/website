@@ -1,0 +1,11 @@
+global:
+  title: Educatieve Blog
+  description: Een blog gewijd aan het delen van educatieve inhoud
+  author: Uw Naam
+  latest_posts: Laatste Berichten
+  language_select: Taal
+nav:
+  home: Home
+  about: Over
+footer:
+  all_rights: Alle rechten voorbehouden 

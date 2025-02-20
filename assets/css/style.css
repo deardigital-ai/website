@@ -32,4 +32,33 @@ a:hover {
 
 .post {
     margin-bottom: 3rem;
+}
+
+.language-nav {
+    text-align: right;
+    margin-bottom: 1rem;
+}
+
+.language-nav a {
+    margin-left: 1rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 3px;
+}
+
+.language-nav a.active {
+    background: #0366d6;
+    color: white;
+}
+
+.post-nav {
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid #eaecef;
+}
+
+.post-nav a {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    background: #f6f8fa;
+    border-radius: 3px;
 } 

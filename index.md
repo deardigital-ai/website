@@ -1,14 +1,20 @@
 ---
 layout: default
-title: Educational Blog
+permalink: /
 ---
 
-# Welcome to My Educational Blog
+# {% t global.title %}
 
-Here you'll find posts about education, learning, and personal development.
+{% t global.description %}
 
-## Latest Posts
+## {% t global.latest_posts %}
 
-{% for post in site.posts %}
-  * [{{ post.title }}]({{ post.url }}) - {{ post.date | date: "%B %-d, %Y" }}
+<ul>
+{% assign posts = site.posts | where: lang, site.lang | sort: "date" | reverse | uniq %}
+{% for post in posts %}
+  <li>
+    <a href="{{ post.url | prepend: site.baseurl }}">{{ post.title }}</a>
+    <span class="post-meta">- {{ post.date | date: "%B %-d, %Y" }}</span>
+  </li>
 {% endfor %}
+</ul>

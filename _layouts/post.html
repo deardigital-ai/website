@@ -14,4 +14,8 @@ layout: default
   <div class="post-content">
     {{ content }}
   </div>
+
+  <div class="post-nav">
+    <a href="{% if page.lang == site.default_lang %}{{ '/' }}{% else %}/{{ page.lang }}/{% endif %}">{% t nav.home %}</a>
+  </div>
 </article> 
