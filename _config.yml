@@ -1,2 +1,12 @@
-title: Mentria
-theme: jekyll-theme-minimal
+title: Educational Blog
+description: A blog dedicated to sharing educational content and learning experiences
+author: Your Name
+baseurl: ""
+url: "https://deardigital.ai"
+markdown: kramdown
+permalink: /:year/:month/:day/:title/
+
+# Build settings
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
