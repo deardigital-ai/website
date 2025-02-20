@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ site.translations[site.lang].global.title }}</title>
+    <link rel="icon" type="image/png" sizes="96x96" href="{{ '/assets/images/favicon-96x96.png' | relative_url }}">
     <link rel="stylesheet" href="{{ '/assets/css/style.css' | relative_url }}">
     {% for lang in site.languages %}
     {% if lang == site.default_lang %}
@@ -17,7 +18,7 @@
     <header>
         <nav class="language-nav">
             {% for lang in site.languages %}
-            <a href="{{ site.url }}{% if lang == site.default_lang %}{{ '/' }}{{ page.url }}{% else %}{{ '/' }}{{ lang }}/{{ page.url }}{% endif %}" {% if lang == site.lang %}class="active"{% endif %}>{{ lang | upcase }}</a>
+            <a href="{{ site.url }}{% if lang == site.default_lang %}{{ page.url }}{% else %}{{ '/' }}{{ lang }}{{ page.url }}{% endif %}" {% if lang == site.lang %}class="active"{% endif %}>{{ lang | upcase }}</a>
             {% endfor %}
         </nav>
         <h1><a href="{% if site.lang == site.default_lang %}{{ '/' | relative_url }}{% else %}/{{ site.lang }}/{% endif %}">{% t global.title %}</a></h1>
