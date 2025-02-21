@@ -6,11 +6,13 @@ on:
   discussion_comment:
     types: [created, edited]
 
+permissions:
+  contents: read
+  discussions: write
+
 jobs:
   respond:
     runs-on: ubuntu-latest
-    permissions:
-      discussions: write
     
     steps:
       - uses: actions/checkout@v4
