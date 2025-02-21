@@ -71,9 +71,8 @@ class GitHubHandler:
 
     def _get_discussion_schema(self, owner: str, name: str, number: int) -> str:
         """Get the GraphQL schema with variables replaced."""
-        # Simple query without nested fields first
         return """
-        {
+        query GetDiscussion {
             repository(owner: "%s", name: "%s") {
                 discussion(number: %d) {
                     id
@@ -91,7 +90,7 @@ class GitHubHandler:
     def _get_discussions_schema(self, owner: str, name: str) -> str:
         """Get the GraphQL schema for listing discussions."""
         return """
-        {
+        query GetDiscussions {
             repository(owner: "%s", name: "%s") {
                 discussions(first: 100) {
                     nodes {
@@ -198,44 +197,34 @@ class GitHubHandler:
             # Get the discussion
             repo = self.github.get_repo(event_payload['repository']['full_name'])
             discussion_number = event_payload['discussion']['number']
+            owner, name = event_payload['repository']['full_name'].split('/')
             
-            # GraphQL schema for discussions
-            discussion_schema = """
-            query($owner: String!, $name: String!, $number: Int!) {
-                repository(owner: $owner, name: $name) {
-                    discussion(number: $number) {
-                        id
-                        title
-                        body
-                        url
-                        author {
-                            login
-                        }
-                        comments(first: 100) {
-                            nodes {
-                                id
-                                body
-                                author {
-                                    login
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            """
+            # Get GraphQL schema with variables replaced
+            discussion_schema = self._get_discussion_schema(owner, name, discussion_number)
             
             try:
                 # Try using GraphQL API
-                owner, name = event_payload['repository']['full_name'].split('/')
+                logger.debug(f"Attempting GraphQL query for owner: {owner}, name: {name}, number: {discussion_number}")
                 discussion = repo.get_discussion(discussion_number, discussion_schema)
             except (AttributeError, GithubException) as e:
-                logger.warning(f"GraphQL API failed, falling back to REST: {str(e)}")
+                logger.warning(f"GraphQL API failed with error type {type(e)}: {str(e)}")
+                logger.warning(f"Full exception details: {repr(e)}")
+                # Log the actual response if available
+                if hasattr(e, 'data'):
+                    logger.warning(f"Error response data: {e.data}")
+                
+                logger.info("Attempting fallback to REST API...")
                 # Fallback to REST API
-                discussions = repo.get_discussions()
-                discussion = next((d for d in discussions if d.number == discussion_number), None)
-                if not discussion:
-                    raise ValueError(f"Discussion #{discussion_number} not found")
+                try:
+                    # Use a different schema for listing discussions
+                    discussions_schema = self._get_discussions_schema(owner, name)
+                    discussions = repo.get_discussions(discussions_schema)
+                    discussion = next((d for d in discussions if d.number == discussion_number), None)
+                    if not discussion:
+                        raise ValueError(f"Discussion #{discussion_number} not found")
+                except Exception as rest_e:
+                    logger.error(f"REST API fallback failed: {str(rest_e)}")
+                    raise
             
             # Get the specific comment
             comment = None
