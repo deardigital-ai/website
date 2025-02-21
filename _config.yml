@@ -33,3 +33,22 @@ defaults:
       type: "posts"
     values:
       layout: "post"
+
+# Exclude directories and/or files from being processed and copied to _site
+exclude:
+  - .sass-cache/
+  - .jekyll-cache/
+  - gemfiles/
+  - Gemfile
+  - Gemfile.lock
+  - node_modules/
+  - vendor/
+  - .git/
+  - .github/
+  - README.md
+  - CHANGELOG.md
+  - "*.log"
+  - temp/
+  - tmp/
+  - drafts/
+  - python/
