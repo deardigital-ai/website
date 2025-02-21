@@ -69,45 +69,6 @@ class GitHubHandler:
         """Format the response with signature and discussion link."""
         return f"{response_text}{BOT_CONFIG['signature']}\n[View conversation]({discussion_url})"
 
-    def _get_discussion_schema(self, owner: str, name: str, number: int) -> str:
-        """Get the GraphQL schema with variables replaced."""
-        return """
-        query GetDiscussion {
-            repository(owner: "%s", name: "%s") {
-                discussion(number: %d) {
-                    id
-                    title
-                    body
-                    url
-                    author {
-                        login
-                    }
-                }
-            }
-        }
-        """ % (owner, name, number)
-
-    def _get_discussions_schema(self, owner: str, name: str) -> str:
-        """Get the GraphQL schema for listing discussions."""
-        return """
-        query GetDiscussions {
-            repository(owner: "%s", name: "%s") {
-                discussions(first: 100) {
-                    nodes {
-                        id
-                        number
-                        title
-                        body
-                        url
-                        author {
-                            login
-                        }
-                    }
-                }
-            }
-        }
-        """ % (owner, name)
-
     def handle_discussion(self, event_payload: dict):
         """Handle a discussion creation or edit event."""
         try:
@@ -116,43 +77,28 @@ class GitHubHandler:
             logger.debug(f"Repository full name: {event_payload.get('repository', {}).get('full_name')}")
             logger.debug(f"Discussion number: {event_payload.get('discussion', {}).get('number')}")
             
-            # Get the discussion
+            # Get the repository
             repo = self.github.get_repo(event_payload['repository']['full_name'])
             discussion_number = event_payload['discussion']['number']
-            owner, name = event_payload['repository']['full_name'].split('/')
             
             # Log repository information
             logger.debug(f"Repository permissions: {repo.permissions}")
             
-            # Get GraphQL schema with variables replaced
-            discussion_schema = self._get_discussion_schema(owner, name, discussion_number)
-            
-            # Log GraphQL query details
-            logger.debug(f"GraphQL Schema to be used: {discussion_schema}")
-            
             try:
-                # Try using GraphQL API
-                logger.debug(f"Attempting GraphQL query for owner: {owner}, name: {name}, number: {discussion_number}")
-                discussion = repo.get_discussion(discussion_number, discussion_schema)
-            except (AttributeError, GithubException) as e:
-                logger.warning(f"GraphQL API failed with error type {type(e)}: {str(e)}")
-                logger.warning(f"Full exception details: {repr(e)}")
-                # Log the actual response if available
-                if hasattr(e, 'data'):
-                    logger.warning(f"Error response data: {e.data}")
+                # Get all discussions and find the one we want
+                discussions = repo.get_discussions()
+                discussion = None
+                for d in discussions:
+                    if d.number == discussion_number:
+                        discussion = d
+                        break
                 
-                logger.info("Attempting fallback to REST API...")
-                # Fallback to REST API
-                try:
-                    # Use a different schema for listing discussions
-                    discussions_schema = self._get_discussions_schema(owner, name)
-                    discussions = repo.get_discussions(discussions_schema)
-                    discussion = next((d for d in discussions if d.number == discussion_number), None)
-                    if not discussion:
-                        raise ValueError(f"Discussion #{discussion_number} not found")
-                except Exception as rest_e:
-                    logger.error(f"REST API fallback failed: {str(rest_e)}")
-                    raise
+                if not discussion:
+                    raise ValueError(f"Discussion #{discussion_number} not found")
+                
+            except Exception as e:
+                logger.error(f"Failed to get discussion: {str(e)}")
+                raise
             
             # Respect cooldown
             self._respect_cooldown()
@@ -194,37 +140,25 @@ class GitHubHandler:
     def handle_discussion_comment(self, event_payload: dict):
         """Handle a discussion comment creation or edit event."""
         try:
-            # Get the discussion
+            # Get the repository
             repo = self.github.get_repo(event_payload['repository']['full_name'])
             discussion_number = event_payload['discussion']['number']
-            owner, name = event_payload['repository']['full_name'].split('/')
-            
-            # Get GraphQL schema with variables replaced
-            discussion_schema = self._get_discussion_schema(owner, name, discussion_number)
             
             try:
-                # Try using GraphQL API
-                logger.debug(f"Attempting GraphQL query for owner: {owner}, name: {name}, number: {discussion_number}")
-                discussion = repo.get_discussion(discussion_number, discussion_schema)
-            except (AttributeError, GithubException) as e:
-                logger.warning(f"GraphQL API failed with error type {type(e)}: {str(e)}")
-                logger.warning(f"Full exception details: {repr(e)}")
-                # Log the actual response if available
-                if hasattr(e, 'data'):
-                    logger.warning(f"Error response data: {e.data}")
+                # Get all discussions and find the one we want
+                discussions = repo.get_discussions()
+                discussion = None
+                for d in discussions:
+                    if d.number == discussion_number:
+                        discussion = d
+                        break
                 
-                logger.info("Attempting fallback to REST API...")
-                # Fallback to REST API
-                try:
-                    # Use a different schema for listing discussions
-                    discussions_schema = self._get_discussions_schema(owner, name)
-                    discussions = repo.get_discussions(discussions_schema)
-                    discussion = next((d for d in discussions if d.number == discussion_number), None)
-                    if not discussion:
-                        raise ValueError(f"Discussion #{discussion_number} not found")
-                except Exception as rest_e:
-                    logger.error(f"REST API fallback failed: {str(rest_e)}")
-                    raise
+                if not discussion:
+                    raise ValueError(f"Discussion #{discussion_number} not found")
+                
+            except Exception as e:
+                logger.error(f"Failed to get discussion: {str(e)}")
+                raise
             
             # Get the specific comment
             comment = None
