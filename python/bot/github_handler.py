@@ -150,17 +150,17 @@ class GitHubHandler:
         
         # Add the initial discussion post
         history.append({
-            'user': discussion['author']['login'],
-            'content': discussion['body'],
-            'response': None
+            'user_input': discussion['body'],
+            'response': None,
+            'user': discussion['author']['login']  # Keep user info for reference
         })
         
         # Add all comments in chronological order
         for comment in discussion['comments']['nodes']:
             history.append({
-                'user': comment['author']['login'],
-                'content': comment['body'],
-                'response': None
+                'user_input': comment['body'],
+                'response': None,
+                'user': comment['author']['login']  # Keep user info for reference
             })
         
         return history
