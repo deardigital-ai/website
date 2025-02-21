@@ -194,7 +194,7 @@ class GitHubHandler:
             history = self._get_conversation_history(discussion)
             
             # Generate response
-            prompt = self.together_client.format_conversation_prompt(
+            prompt = self.together_client.format_conversation_history(
                 conversation_history=history,
                 current_message=discussion['body'],
                 system_prompt=self.system_prompt
@@ -251,7 +251,7 @@ class GitHubHandler:
             history = self._get_conversation_history(discussion)
             
             # Generate response
-            prompt = self.together_client.format_conversation_prompt(
+            prompt = self.together_client.format_conversation_history(
                 conversation_history=history,
                 current_message=comment['body'],
                 system_prompt=self.system_prompt
