@@ -43,18 +43,20 @@ class GitHubHandler:
         
         # Add the initial discussion post
         history.append({
-            'user': discussion.author.login,
+            'user': discussion.author.login if hasattr(discussion, 'author') else discussion.user.login,
             'content': discussion.body,
             'response': None
         })
         
         # Add all comments in chronological order
-        for comment in discussion.get_all_comments():
-            history.append({
-                'user': comment.author.login,
-                'content': comment.body,
-                'response': None
-            })
+        comments_method = getattr(discussion, 'get_all_comments', None) or getattr(discussion, 'get_comments', None)
+        if comments_method:
+            for comment in comments_method():
+                history.append({
+                    'user': comment.author.login if hasattr(comment, 'author') else comment.user.login,
+                    'content': comment.body,
+                    'response': None
+                })
         
         return history
 
@@ -65,15 +67,43 @@ class GitHubHandler:
     def handle_discussion(self, event_payload: dict):
         """Handle a discussion creation or edit event."""
         try:
-            # Get the discussion using GraphQL
+            # Get the discussion
             repo = self.github.get_repo(event_payload['repository']['full_name'])
             discussion_number = event_payload['discussion']['number']
             
+            # GraphQL schema for discussions
+            discussion_schema = """
+            query($owner: String!, $name: String!, $number: Int!) {
+                repository(owner: $owner, name: $name) {
+                    discussion(number: $number) {
+                        id
+                        title
+                        body
+                        url
+                        author {
+                            login
+                        }
+                        comments(first: 100) {
+                            nodes {
+                                id
+                                body
+                                author {
+                                    login
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            """
+            
             try:
-                # First try using the new GraphQL API
-                discussion = repo.get_discussion(discussion_number)
-            except (AttributeError, GithubException):
-                # Fallback to REST API if GraphQL fails
+                # Try using GraphQL API
+                owner, name = event_payload['repository']['full_name'].split('/')
+                discussion = repo.get_discussion(discussion_number, discussion_schema)
+            except (AttributeError, GithubException) as e:
+                logger.warning(f"GraphQL API failed, falling back to REST: {str(e)}")
+                # Fallback to REST API
                 discussions = repo.get_discussions()
                 discussion = next((d for d in discussions if d.number == discussion_number), None)
                 if not discussion:
@@ -99,7 +129,16 @@ class GitHubHandler:
             
             # Format and post response
             formatted_response = self._format_response(response, discussion.html_url)
-            discussion.create_reply(formatted_response)
+            # Try both methods for creating replies
+            try:
+                if hasattr(discussion, 'create_reply'):
+                    discussion.create_reply(formatted_response)
+                else:
+                    discussion.create_comment(formatted_response)
+            except Exception as e:
+                logger.error(f"Failed to create reply: {str(e)}")
+                # Final fallback - try to create a regular comment
+                discussion.create_comment(formatted_response)
             
             logger.info(f"Successfully responded to discussion #{discussion.number}")
             
@@ -110,15 +149,43 @@ class GitHubHandler:
     def handle_discussion_comment(self, event_payload: dict):
         """Handle a discussion comment creation or edit event."""
         try:
-            # Get the discussion and comment using GraphQL
+            # Get the discussion
             repo = self.github.get_repo(event_payload['repository']['full_name'])
             discussion_number = event_payload['discussion']['number']
             
+            # GraphQL schema for discussions
+            discussion_schema = """
+            query($owner: String!, $name: String!, $number: Int!) {
+                repository(owner: $owner, name: $name) {
+                    discussion(number: $number) {
+                        id
+                        title
+                        body
+                        url
+                        author {
+                            login
+                        }
+                        comments(first: 100) {
+                            nodes {
+                                id
+                                body
+                                author {
+                                    login
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            """
+            
             try:
-                # First try using the new GraphQL API
-                discussion = repo.get_discussion(discussion_number)
-            except (AttributeError, GithubException):
-                # Fallback to REST API if GraphQL fails
+                # Try using GraphQL API
+                owner, name = event_payload['repository']['full_name'].split('/')
+                discussion = repo.get_discussion(discussion_number, discussion_schema)
+            except (AttributeError, GithubException) as e:
+                logger.warning(f"GraphQL API failed, falling back to REST: {str(e)}")
+                # Fallback to REST API
                 discussions = repo.get_discussions()
                 discussion = next((d for d in discussions if d.number == discussion_number), None)
                 if not discussion:
@@ -126,10 +193,12 @@ class GitHubHandler:
             
             # Get the specific comment
             comment = None
-            for c in discussion.get_all_comments():
-                if str(c.id) == str(event_payload['comment']['id']):
-                    comment = c
-                    break
+            comments_method = getattr(discussion, 'get_all_comments', None) or getattr(discussion, 'get_comments', None)
+            if comments_method:
+                for c in comments_method():
+                    if str(c.id) == str(event_payload['comment']['id']):
+                        comment = c
+                        break
                     
             if not comment:
                 raise ValueError(f"Comment {event_payload['comment']['id']} not found")
@@ -154,7 +223,16 @@ class GitHubHandler:
             
             # Format and post response
             formatted_response = self._format_response(response, comment.html_url)
-            discussion.create_reply(formatted_response)
+            # Try both methods for creating replies
+            try:
+                if hasattr(discussion, 'create_reply'):
+                    discussion.create_reply(formatted_response)
+                else:
+                    discussion.create_comment(formatted_response)
+            except Exception as e:
+                logger.error(f"Failed to create reply: {str(e)}")
+                # Final fallback - try to create a regular comment
+                discussion.create_comment(formatted_response)
             
             logger.info(f"Successfully responded to comment on discussion #{discussion.number}")
             
