@@ -45,54 +45,104 @@ class GitHubHandler:
         self.last_response_time = time.time()
 
     def _get_discussion(self, repo_full_name: str, discussion_number: int) -> Dict:
-        """Get a discussion using GitHub REST API."""
+        """Get a discussion using GitHub GraphQL API."""
         headers = {
-            'Accept': 'application/vnd.github.v3+json',
-            'Authorization': f'token {self.github_token}'
+            'Authorization': f'Bearer {self.github_token}',
+            'Content-Type': 'application/json',
         }
         
-        # First get the discussion ID using GraphQL (required for REST API)
-        graphql_url = 'https://api.github.com/graphql'
-        query = f"""
-        {{
-          repository(owner: "{repo_full_name.split('/')[0]}", name: "{repo_full_name.split('/')[1]}") {{
-            discussion(number: {discussion_number}) {{
+        # Use GraphQL to get all the discussion details we need
+        query = """
+        query GetDiscussion($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) {
+            discussion(number: $number) {
               id
-            }}
-          }}
-        }}
+              url
+              body
+              author {
+                login
+              }
+              comments(first: 100) {
+                nodes {
+                  id
+                  body
+                  author {
+                    login
+                  }
+                  url
+                }
+              }
+            }
+          }
+        }
         """
         
-        response = requests.post(
-            graphql_url,
-            headers={'Authorization': f'Bearer {self.github_token}'},
-            json={'query': query}
-        )
-        response.raise_for_status()
-        
-        discussion_id = response.json()['data']['repository']['discussion']['id']
-        
-        # Now get the full discussion details using REST API
-        url = f'https://api.github.com/repos/{repo_full_name}/discussions/{discussion_id}'
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        
-        return response.json()
-
-    def _create_discussion_comment(self, repo_full_name: str, discussion_number: int, body: str) -> Dict:
-        """Create a comment on a discussion using GitHub REST API."""
-        headers = {
-            'Accept': 'application/vnd.github.v3+json',
-            'Authorization': f'token {self.github_token}'
+        variables = {
+            'owner': repo_full_name.split('/')[0],
+            'name': repo_full_name.split('/')[1],
+            'number': discussion_number
         }
         
-        url = f'https://api.github.com/repos/{repo_full_name}/discussions/{discussion_number}/comments'
-        data = {'body': body}
+        response = requests.post(
+            'https://api.github.com/graphql',
+            headers=headers,
+            json={'query': query, 'variables': variables}
+        )
         
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
+        if response.status_code != 200:
+            logger.error(f"GraphQL Error Response: {response.text}")
+            response.raise_for_status()
+            
+        data = response.json()
+        if 'errors' in data:
+            logger.error(f"GraphQL Errors: {data['errors']}")
+            raise Exception(f"GraphQL Error: {data['errors'][0]['message']}")
+            
+        discussion_data = data['data']['repository']['discussion']
+        if not discussion_data:
+            raise ValueError(f"Discussion #{discussion_number} not found")
+            
+        return discussion_data
+
+    def _create_discussion_comment(self, repo_full_name: str, discussion_id: str, body: str) -> Dict:
+        """Create a comment on a discussion using GitHub GraphQL API."""
+        headers = {
+            'Authorization': f'Bearer {self.github_token}',
+            'Content-Type': 'application/json',
+        }
         
-        return response.json()
+        mutation = """
+        mutation CreateDiscussionComment($discussionId: ID!, $body: String!) {
+          addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+            comment {
+              id
+              url
+            }
+          }
+        }
+        """
+        
+        variables = {
+            'discussionId': discussion_id,
+            'body': body
+        }
+        
+        response = requests.post(
+            'https://api.github.com/graphql',
+            headers=headers,
+            json={'query': mutation, 'variables': variables}
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"GraphQL Error Response: {response.text}")
+            response.raise_for_status()
+            
+        data = response.json()
+        if 'errors' in data:
+            logger.error(f"GraphQL Errors: {data['errors']}")
+            raise Exception(f"GraphQL Error: {data['errors'][0]['message']}")
+            
+        return data['data']['addDiscussionComment']['comment']
 
     def _get_conversation_history(self, discussion: Dict) -> List[Dict]:
         """Reconstruct conversation history from a discussion."""
@@ -106,7 +156,7 @@ class GitHubHandler:
         })
         
         # Add all comments in chronological order
-        for comment in discussion.get('comments', []):
+        for comment in discussion['comments']['nodes']:
             history.append({
                 'user': comment['author']['login'],
                 'content': comment['body'],
@@ -131,7 +181,7 @@ class GitHubHandler:
             discussion_number = event_payload['discussion']['number']
             
             try:
-                # Get the discussion using REST API
+                # Get the discussion using GraphQL API
                 discussion = self._get_discussion(repo_full_name, discussion_number)
             except Exception as e:
                 logger.error(f"Failed to get discussion: {str(e)}")
@@ -156,11 +206,11 @@ class GitHubHandler:
             )
             
             # Format and post response
-            formatted_response = self._format_response(response, discussion['html_url'])
+            formatted_response = self._format_response(response, discussion['url'])
             
             try:
-                # Create comment using REST API
-                self._create_discussion_comment(repo_full_name, discussion_number, formatted_response)
+                # Create comment using GraphQL API
+                self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
                 logger.info(f"Successfully responded to discussion #{discussion_number}")
             except Exception as e:
                 logger.error(f"Failed to create comment: {str(e)}")
@@ -177,7 +227,7 @@ class GitHubHandler:
             discussion_number = event_payload['discussion']['number']
             
             try:
-                # Get the discussion using REST API
+                # Get the discussion using GraphQL API
                 discussion = self._get_discussion(repo_full_name, discussion_number)
             except Exception as e:
                 logger.error(f"Failed to get discussion: {str(e)}")
@@ -186,7 +236,7 @@ class GitHubHandler:
             # Get the specific comment
             comment = None
             comment_id = event_payload['comment']['id']
-            for c in discussion.get('comments', []):
+            for c in discussion['comments']['nodes']:
                 if str(c['id']) == str(comment_id):
                     comment = c
                     break
@@ -213,11 +263,11 @@ class GitHubHandler:
             )
             
             # Format and post response
-            formatted_response = self._format_response(response, comment['html_url'])
+            formatted_response = self._format_response(response, comment['url'])
             
             try:
-                # Create comment using REST API
-                self._create_discussion_comment(repo_full_name, discussion_number, formatted_response)
+                # Create comment using GraphQL API
+                self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
                 logger.info(f"Successfully responded to comment on discussion #{discussion_number}")
             except Exception as e:
                 logger.error(f"Failed to create comment: {str(e)}")
