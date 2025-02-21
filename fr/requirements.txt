@@ -1,0 +1,5 @@
+PyGithub==2.1.1
+python-dotenv>=1.0.0
+requests>=2.31.0
+rich>=13.7.0
+backoff>=2.2.1 
