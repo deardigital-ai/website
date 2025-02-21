@@ -4,6 +4,7 @@ from typing import List, Dict
 from github import Github
 from github.GithubObject import GithubObject
 from github.GithubException import GithubException
+import pkg_resources
 
 from python.config import API_CONFIG, BOT_CONFIG
 from python.bot.together_client import TogetherClient
@@ -17,6 +18,10 @@ class GitHubHandler:
         self.github = Github(API_CONFIG['github_token'])
         self.together_client = TogetherClient()
         self.last_response_time = 0
+        
+        # Log version information
+        pygithub_version = pkg_resources.get_distribution('PyGithub').version
+        logger.info(f"Using PyGithub version: {pygithub_version}")
         
         # System prompt for the model
         self.system_prompt = (
@@ -67,13 +72,21 @@ class GitHubHandler:
     def handle_discussion(self, event_payload: dict):
         """Handle a discussion creation or edit event."""
         try:
+            # Log event payload structure
+            logger.debug(f"Event payload keys: {event_payload.keys()}")
+            logger.debug(f"Repository full name: {event_payload.get('repository', {}).get('full_name')}")
+            logger.debug(f"Discussion number: {event_payload.get('discussion', {}).get('number')}")
+            
             # Get the discussion
             repo = self.github.get_repo(event_payload['repository']['full_name'])
             discussion_number = event_payload['discussion']['number']
             
+            # Log repository information
+            logger.debug(f"Repository permissions: {repo.permissions}")
+            
             # GraphQL schema for discussions
             discussion_schema = """
-            query($owner: String!, $name: String!, $number: Int!) {
+            query getDiscussion($owner: String!, $name: String!, $number: Int!) {
                 repository(owner: $owner, name: $name) {
                     discussion(number: $number) {
                         id
@@ -97,17 +110,31 @@ class GitHubHandler:
             }
             """
             
+            # Log GraphQL query details
+            logger.debug(f"GraphQL Schema to be used: {discussion_schema}")
+            
             try:
                 # Try using GraphQL API
                 owner, name = event_payload['repository']['full_name'].split('/')
+                logger.debug(f"Attempting GraphQL query for owner: {owner}, name: {name}, number: {discussion_number}")
                 discussion = repo.get_discussion(discussion_number, discussion_schema)
             except (AttributeError, GithubException) as e:
-                logger.warning(f"GraphQL API failed, falling back to REST: {str(e)}")
+                logger.warning(f"GraphQL API failed with error type {type(e)}: {str(e)}")
+                logger.warning(f"Full exception details: {repr(e)}")
+                # Log the actual response if available
+                if hasattr(e, 'data'):
+                    logger.warning(f"Error response data: {e.data}")
+                
+                logger.info("Attempting fallback to REST API...")
                 # Fallback to REST API
-                discussions = repo.get_discussions()
-                discussion = next((d for d in discussions if d.number == discussion_number), None)
-                if not discussion:
-                    raise ValueError(f"Discussion #{discussion_number} not found")
+                try:
+                    discussions = repo.get_discussions(discussion_schema)
+                    discussion = next((d for d in discussions if d.number == discussion_number), None)
+                    if not discussion:
+                        raise ValueError(f"Discussion #{discussion_number} not found")
+                except Exception as rest_e:
+                    logger.error(f"REST API fallback failed: {str(rest_e)}")
+                    raise
             
             # Respect cooldown
             self._respect_cooldown()
