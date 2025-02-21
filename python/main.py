@@ -14,7 +14,7 @@ from python.config import setup_logging
 def parse_args():
     parser = argparse.ArgumentParser(description='DeepSeek-R1 Discussion Bot')
     parser.add_argument('--github-event', type=str, help='GitHub event type')
-    parser.add_argument('--event-payload', type=str, help='GitHub event payload as JSON')
+    parser.add_argument('--event-payload-file', type=str, help='Path to file containing GitHub event payload JSON')
     return parser.parse_args()
 
 def handle_github_event(event_type: str, event_payload: dict):
@@ -34,9 +34,10 @@ def main():
     args = parse_args()
 
     try:
-        if args.github_event and args.event_payload:
+        if args.github_event and args.event_payload_file:
             # GitHub Action mode
-            event_payload = json.loads(args.event_payload)
+            with open(args.event_payload_file, 'r') as f:
+                event_payload = json.load(f)
             handle_github_event(args.github_event, event_payload)
         else:
             # Terminal mode
