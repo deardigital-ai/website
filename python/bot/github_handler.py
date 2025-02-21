@@ -1,5 +1,6 @@
 import logging
 import time
+import requests
 from typing import List, Dict
 from github import Github
 from github.GithubObject import GithubObject
@@ -18,6 +19,7 @@ class GitHubHandler:
         self.github = Github(API_CONFIG['github_token'])
         self.together_client = TogetherClient()
         self.last_response_time = 0
+        self.github_token = API_CONFIG['github_token']
         
         # Log version information
         pygithub_version = pkg_resources.get_distribution('PyGithub').version
@@ -42,26 +44,74 @@ class GitHubHandler:
         
         self.last_response_time = time.time()
 
-    def _get_conversation_history(self, discussion: GithubObject) -> List[Dict]:
+    def _get_discussion(self, repo_full_name: str, discussion_number: int) -> Dict:
+        """Get a discussion using GitHub REST API."""
+        headers = {
+            'Accept': 'application/vnd.github.v3+json',
+            'Authorization': f'token {self.github_token}'
+        }
+        
+        # First get the discussion ID using GraphQL (required for REST API)
+        graphql_url = 'https://api.github.com/graphql'
+        query = f"""
+        {{
+          repository(owner: "{repo_full_name.split('/')[0]}", name: "{repo_full_name.split('/')[1]}") {{
+            discussion(number: {discussion_number}) {{
+              id
+            }}
+          }}
+        }}
+        """
+        
+        response = requests.post(
+            graphql_url,
+            headers={'Authorization': f'Bearer {self.github_token}'},
+            json={'query': query}
+        )
+        response.raise_for_status()
+        
+        discussion_id = response.json()['data']['repository']['discussion']['id']
+        
+        # Now get the full discussion details using REST API
+        url = f'https://api.github.com/repos/{repo_full_name}/discussions/{discussion_id}'
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        
+        return response.json()
+
+    def _create_discussion_comment(self, repo_full_name: str, discussion_number: int, body: str) -> Dict:
+        """Create a comment on a discussion using GitHub REST API."""
+        headers = {
+            'Accept': 'application/vnd.github.v3+json',
+            'Authorization': f'token {self.github_token}'
+        }
+        
+        url = f'https://api.github.com/repos/{repo_full_name}/discussions/{discussion_number}/comments'
+        data = {'body': body}
+        
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        
+        return response.json()
+
+    def _get_conversation_history(self, discussion: Dict) -> List[Dict]:
         """Reconstruct conversation history from a discussion."""
         history = []
         
         # Add the initial discussion post
         history.append({
-            'user': discussion.author.login if hasattr(discussion, 'author') else discussion.user.login,
-            'content': discussion.body,
+            'user': discussion['author']['login'],
+            'content': discussion['body'],
             'response': None
         })
         
         # Add all comments in chronological order
-        comments_method = getattr(discussion, 'get_all_comments', None) or getattr(discussion, 'get_comments', None)
-        if comments_method:
-            for comment in comments_method():
-                history.append({
-                    'user': comment.author.login if hasattr(comment, 'author') else comment.user.login,
-                    'content': comment.body,
-                    'response': None
-                })
+        for comment in discussion.get('comments', []):
+            history.append({
+                'user': comment['author']['login'],
+                'content': comment['body'],
+                'response': None
+            })
         
         return history
 
@@ -77,25 +127,12 @@ class GitHubHandler:
             logger.debug(f"Repository full name: {event_payload.get('repository', {}).get('full_name')}")
             logger.debug(f"Discussion number: {event_payload.get('discussion', {}).get('number')}")
             
-            # Get the repository
-            repo = self.github.get_repo(event_payload['repository']['full_name'])
+            repo_full_name = event_payload['repository']['full_name']
             discussion_number = event_payload['discussion']['number']
             
-            # Log repository information
-            logger.debug(f"Repository permissions: {repo.permissions}")
-            
             try:
-                # Get all discussions and find the one we want
-                discussions = repo.get_discussions()
-                discussion = None
-                for d in discussions:
-                    if d.number == discussion_number:
-                        discussion = d
-                        break
-                
-                if not discussion:
-                    raise ValueError(f"Discussion #{discussion_number} not found")
-                
+                # Get the discussion using REST API
+                discussion = self._get_discussion(repo_full_name, discussion_number)
             except Exception as e:
                 logger.error(f"Failed to get discussion: {str(e)}")
                 raise
@@ -109,7 +146,7 @@ class GitHubHandler:
             # Generate response
             prompt = self.together_client.format_conversation_prompt(
                 conversation_history=history,
-                current_message=discussion.body,
+                current_message=discussion['body'],
                 system_prompt=self.system_prompt
             )
             
@@ -119,19 +156,15 @@ class GitHubHandler:
             )
             
             # Format and post response
-            formatted_response = self._format_response(response, discussion.html_url)
-            # Try both methods for creating replies
-            try:
-                if hasattr(discussion, 'create_reply'):
-                    discussion.create_reply(formatted_response)
-                else:
-                    discussion.create_comment(formatted_response)
-            except Exception as e:
-                logger.error(f"Failed to create reply: {str(e)}")
-                # Final fallback - try to create a regular comment
-                discussion.create_comment(formatted_response)
+            formatted_response = self._format_response(response, discussion['html_url'])
             
-            logger.info(f"Successfully responded to discussion #{discussion.number}")
+            try:
+                # Create comment using REST API
+                self._create_discussion_comment(repo_full_name, discussion_number, formatted_response)
+                logger.info(f"Successfully responded to discussion #{discussion_number}")
+            except Exception as e:
+                logger.error(f"Failed to create comment: {str(e)}")
+                raise
             
         except Exception as e:
             logger.error(f"Error handling discussion: {str(e)}", exc_info=True)
@@ -140,37 +173,26 @@ class GitHubHandler:
     def handle_discussion_comment(self, event_payload: dict):
         """Handle a discussion comment creation or edit event."""
         try:
-            # Get the repository
-            repo = self.github.get_repo(event_payload['repository']['full_name'])
+            repo_full_name = event_payload['repository']['full_name']
             discussion_number = event_payload['discussion']['number']
             
             try:
-                # Get all discussions and find the one we want
-                discussions = repo.get_discussions()
-                discussion = None
-                for d in discussions:
-                    if d.number == discussion_number:
-                        discussion = d
-                        break
-                
-                if not discussion:
-                    raise ValueError(f"Discussion #{discussion_number} not found")
-                
+                # Get the discussion using REST API
+                discussion = self._get_discussion(repo_full_name, discussion_number)
             except Exception as e:
                 logger.error(f"Failed to get discussion: {str(e)}")
                 raise
             
             # Get the specific comment
             comment = None
-            comments_method = getattr(discussion, 'get_all_comments', None) or getattr(discussion, 'get_comments', None)
-            if comments_method:
-                for c in comments_method():
-                    if str(c.id) == str(event_payload['comment']['id']):
-                        comment = c
-                        break
+            comment_id = event_payload['comment']['id']
+            for c in discussion.get('comments', []):
+                if str(c['id']) == str(comment_id):
+                    comment = c
+                    break
                     
             if not comment:
-                raise ValueError(f"Comment {event_payload['comment']['id']} not found")
+                raise ValueError(f"Comment {comment_id} not found")
             
             # Respect cooldown
             self._respect_cooldown()
@@ -181,7 +203,7 @@ class GitHubHandler:
             # Generate response
             prompt = self.together_client.format_conversation_prompt(
                 conversation_history=history,
-                current_message=comment.body,
+                current_message=comment['body'],
                 system_prompt=self.system_prompt
             )
             
@@ -191,19 +213,15 @@ class GitHubHandler:
             )
             
             # Format and post response
-            formatted_response = self._format_response(response, comment.html_url)
-            # Try both methods for creating replies
-            try:
-                if hasattr(discussion, 'create_reply'):
-                    discussion.create_reply(formatted_response)
-                else:
-                    discussion.create_comment(formatted_response)
-            except Exception as e:
-                logger.error(f"Failed to create reply: {str(e)}")
-                # Final fallback - try to create a regular comment
-                discussion.create_comment(formatted_response)
+            formatted_response = self._format_response(response, comment['html_url'])
             
-            logger.info(f"Successfully responded to comment on discussion #{discussion.number}")
+            try:
+                # Create comment using REST API
+                self._create_discussion_comment(repo_full_name, discussion_number, formatted_response)
+                logger.info(f"Successfully responded to comment on discussion #{discussion_number}")
+            except Exception as e:
+                logger.error(f"Failed to create comment: {str(e)}")
+                raise
             
         except Exception as e:
             logger.error(f"Error handling discussion comment: {str(e)}", exc_info=True)
