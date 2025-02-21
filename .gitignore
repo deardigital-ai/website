@@ -32,7 +32,6 @@ Thumbs.db
 *.swo
 *~ 
 .cursorrules
-python/
 
 # Environment variables
 .env
