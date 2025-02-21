@@ -71,30 +71,43 @@ class GitHubHandler:
 
     def _get_discussion_schema(self, owner: str, name: str, number: int) -> str:
         """Get the GraphQL schema with variables replaced."""
-        return f"""
-        query {{
-            repository(owner: "{owner}", name: "{name}") {{
-                discussion(number: {number}) {{
+        # Simple query without nested fields first
+        return """
+        {
+            repository(owner: "%s", name: "%s") {
+                discussion(number: %d) {
                     id
                     title
                     body
                     url
-                    author {{
+                    author {
                         login
-                    }}
-                    comments(first: 100) {{
-                        nodes {{
-                            id
-                            body
-                            author {{
-                                login
-                            }}
-                        }}
-                    }}
-                }}
-            }}
-        }}
-        """
+                    }
+                }
+            }
+        }
+        """ % (owner, name, number)
+
+    def _get_discussions_schema(self, owner: str, name: str) -> str:
+        """Get the GraphQL schema for listing discussions."""
+        return """
+        {
+            repository(owner: "%s", name: "%s") {
+                discussions(first: 100) {
+                    nodes {
+                        id
+                        number
+                        title
+                        body
+                        url
+                        author {
+                            login
+                        }
+                    }
+                }
+            }
+        }
+        """ % (owner, name)
 
     def handle_discussion(self, event_payload: dict):
         """Handle a discussion creation or edit event."""
@@ -132,8 +145,9 @@ class GitHubHandler:
                 logger.info("Attempting fallback to REST API...")
                 # Fallback to REST API
                 try:
-                    # Use the same schema for discussions list
-                    discussions = repo.get_discussions(discussion_schema)
+                    # Use a different schema for listing discussions
+                    discussions_schema = self._get_discussions_schema(owner, name)
+                    discussions = repo.get_discussions(discussions_schema)
                     discussion = next((d for d in discussions if d.number == discussion_number), None)
                     if not discussion:
                         raise ValueError(f"Discussion #{discussion_number} not found")
