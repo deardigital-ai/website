@@ -3,6 +3,7 @@ import time
 from typing import List, Dict
 from github import Github
 from github.GithubObject import GithubObject
+from github.GraphQLException import GraphQLException
 
 from python.config import API_CONFIG, BOT_CONFIG
 from python.bot.together_client import TogetherClient
@@ -42,15 +43,15 @@ class GitHubHandler:
         
         # Add the initial discussion post
         history.append({
-            'user': discussion.user.login,
+            'user': discussion.author.login,
             'content': discussion.body,
             'response': None
         })
         
         # Add all comments in chronological order
-        for comment in discussion.get_comments():
+        for comment in discussion.get_all_comments():
             history.append({
-                'user': comment.user.login,
+                'user': comment.author.login,
                 'content': comment.body,
                 'response': None
             })
@@ -64,9 +65,19 @@ class GitHubHandler:
     def handle_discussion(self, event_payload: dict):
         """Handle a discussion creation or edit event."""
         try:
-            # Get the discussion
+            # Get the discussion using GraphQL
             repo = self.github.get_repo(event_payload['repository']['full_name'])
-            discussion = repo.get_discussion(event_payload['discussion']['number'])
+            discussion_number = event_payload['discussion']['number']
+            
+            try:
+                # First try using the new GraphQL API
+                discussion = repo.get_discussion(discussion_number)
+            except (AttributeError, GraphQLException):
+                # Fallback to REST API if GraphQL fails
+                discussions = repo.get_discussions()
+                discussion = next((d for d in discussions if d.number == discussion_number), None)
+                if not discussion:
+                    raise ValueError(f"Discussion #{discussion_number} not found")
             
             # Respect cooldown
             self._respect_cooldown()
@@ -88,7 +99,7 @@ class GitHubHandler:
             
             # Format and post response
             formatted_response = self._format_response(response, discussion.html_url)
-            discussion.create_comment(formatted_response)
+            discussion.create_reply(formatted_response)
             
             logger.info(f"Successfully responded to discussion #{discussion.number}")
             
@@ -99,10 +110,29 @@ class GitHubHandler:
     def handle_discussion_comment(self, event_payload: dict):
         """Handle a discussion comment creation or edit event."""
         try:
-            # Get the discussion and comment
+            # Get the discussion and comment using GraphQL
             repo = self.github.get_repo(event_payload['repository']['full_name'])
-            discussion = repo.get_discussion(event_payload['discussion']['number'])
-            comment = discussion.get_comment(event_payload['comment']['id'])
+            discussion_number = event_payload['discussion']['number']
+            
+            try:
+                # First try using the new GraphQL API
+                discussion = repo.get_discussion(discussion_number)
+            except (AttributeError, GraphQLException):
+                # Fallback to REST API if GraphQL fails
+                discussions = repo.get_discussions()
+                discussion = next((d for d in discussions if d.number == discussion_number), None)
+                if not discussion:
+                    raise ValueError(f"Discussion #{discussion_number} not found")
+            
+            # Get the specific comment
+            comment = None
+            for c in discussion.get_all_comments():
+                if str(c.id) == str(event_payload['comment']['id']):
+                    comment = c
+                    break
+                    
+            if not comment:
+                raise ValueError(f"Comment {event_payload['comment']['id']} not found")
             
             # Respect cooldown
             self._respect_cooldown()
@@ -124,7 +154,7 @@ class GitHubHandler:
             
             # Format and post response
             formatted_response = self._format_response(response, comment.html_url)
-            discussion.create_comment(formatted_response)
+            discussion.create_reply(formatted_response)
             
             logger.info(f"Successfully responded to comment on discussion #{discussion.number}")
             
