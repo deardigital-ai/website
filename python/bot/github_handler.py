@@ -3,7 +3,7 @@ import time
 from typing import List, Dict
 from github import Github
 from github.GithubObject import GithubObject
-from github.GraphQLException import GraphQLException
+from github.GithubException import GithubException
 
 from python.config import API_CONFIG, BOT_CONFIG
 from python.bot.together_client import TogetherClient
@@ -72,7 +72,7 @@ class GitHubHandler:
             try:
                 # First try using the new GraphQL API
                 discussion = repo.get_discussion(discussion_number)
-            except (AttributeError, GraphQLException):
+            except (AttributeError, GithubException):
                 # Fallback to REST API if GraphQL fails
                 discussions = repo.get_discussions()
                 discussion = next((d for d in discussions if d.number == discussion_number), None)
@@ -117,7 +117,7 @@ class GitHubHandler:
             try:
                 # First try using the new GraphQL API
                 discussion = repo.get_discussion(discussion_number)
-            except (AttributeError, GraphQLException):
+            except (AttributeError, GithubException):
                 # Fallback to REST API if GraphQL fails
                 discussions = repo.get_discussions()
                 discussion = next((d for d in discussions if d.number == discussion_number), None)
