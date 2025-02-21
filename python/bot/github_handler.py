@@ -69,6 +69,33 @@ class GitHubHandler:
         """Format the response with signature and discussion link."""
         return f"{response_text}{BOT_CONFIG['signature']}\n[View conversation]({discussion_url})"
 
+    def _get_discussion_schema(self, owner: str, name: str, number: int) -> str:
+        """Get the GraphQL schema with variables replaced."""
+        return f"""
+        query {{
+            repository(owner: "{owner}", name: "{name}") {{
+                discussion(number: {number}) {{
+                    id
+                    title
+                    body
+                    url
+                    author {{
+                        login
+                    }}
+                    comments(first: 100) {{
+                        nodes {{
+                            id
+                            body
+                            author {{
+                                login
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+        }}
+        """
+
     def handle_discussion(self, event_payload: dict):
         """Handle a discussion creation or edit event."""
         try:
@@ -80,42 +107,19 @@ class GitHubHandler:
             # Get the discussion
             repo = self.github.get_repo(event_payload['repository']['full_name'])
             discussion_number = event_payload['discussion']['number']
+            owner, name = event_payload['repository']['full_name'].split('/')
             
             # Log repository information
             logger.debug(f"Repository permissions: {repo.permissions}")
             
-            # GraphQL schema for discussions
-            discussion_schema = """
-            query getDiscussion($owner: String!, $name: String!, $number: Int!) {
-                repository(owner: $owner, name: $name) {
-                    discussion(number: $number) {
-                        id
-                        title
-                        body
-                        url
-                        author {
-                            login
-                        }
-                        comments(first: 100) {
-                            nodes {
-                                id
-                                body
-                                author {
-                                    login
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            """
+            # Get GraphQL schema with variables replaced
+            discussion_schema = self._get_discussion_schema(owner, name, discussion_number)
             
             # Log GraphQL query details
             logger.debug(f"GraphQL Schema to be used: {discussion_schema}")
             
             try:
                 # Try using GraphQL API
-                owner, name = event_payload['repository']['full_name'].split('/')
                 logger.debug(f"Attempting GraphQL query for owner: {owner}, name: {name}, number: {discussion_number}")
                 discussion = repo.get_discussion(discussion_number, discussion_schema)
             except (AttributeError, GithubException) as e:
@@ -128,6 +132,7 @@ class GitHubHandler:
                 logger.info("Attempting fallback to REST API...")
                 # Fallback to REST API
                 try:
+                    # Use the same schema for discussions list
                     discussions = repo.get_discussions(discussion_schema)
                     discussion = next((d for d in discussions if d.number == discussion_number), None)
                     if not discussion:
