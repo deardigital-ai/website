@@ -57,6 +57,7 @@ class GitHubHandler:
           repository(owner: $owner, name: $name) {
             discussion(number: $number) {
               id
+              databaseId
               url
               body
               author {
@@ -65,6 +66,7 @@ class GitHubHandler:
               comments(first: 100) {
                 nodes {
                   id
+                  databaseId
                   body
                   author {
                     login
@@ -226,23 +228,86 @@ class GitHubHandler:
             repo_full_name = event_payload['repository']['full_name']
             discussion_number = event_payload['discussion']['number']
             
+            # Log the event payload for debugging
+            logger.debug(f"Event payload: {event_payload}")
+            
             try:
                 # Get the discussion using GraphQL API
                 discussion = self._get_discussion(repo_full_name, discussion_number)
+                logger.debug(f"Discussion data: {discussion}")
             except Exception as e:
                 logger.error(f"Failed to get discussion: {str(e)}")
                 raise
             
             # Get the specific comment
             comment = None
-            comment_id = event_payload['comment']['id']
+            comment_id = event_payload['comment']['node_id']  # Use node_id instead of id
+            logger.info(f"Looking for comment with node_id: {comment_id}")
+            
+            # Log all comment IDs for debugging
             for c in discussion['comments']['nodes']:
-                if str(c['id']) == str(comment_id):
+                logger.debug(f"Found comment with ID: {c['id']}")
+                if c['id'] == comment_id:
+                    logger.info(f"Found matching comment: {c}")
                     comment = c
                     break
                     
             if not comment:
-                raise ValueError(f"Comment {comment_id} not found")
+                # Try alternative matching using database ID
+                db_id = str(event_payload['comment']['id'])
+                logger.info(f"Comment not found by node_id, trying database ID: {db_id}")
+                
+                # Query for the specific comment using GraphQL
+                comment_query = """
+                query GetComment($owner: String!, $name: String!, $number: Int!) {
+                  repository(owner: $owner, name: $name) {
+                    discussion(number: $number) {
+                      comments(first: 100) {
+                        nodes {
+                          id
+                          databaseId
+                          url
+                          body
+                          author {
+                            login
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+                """
+                
+                variables = {
+                    'owner': repo_full_name.split('/')[0],
+                    'name': repo_full_name.split('/')[1],
+                    'number': discussion_number
+                }
+                
+                response = requests.post(
+                    'https://api.github.com/graphql',
+                    headers={
+                        'Authorization': f'Bearer {self.github_token}',
+                        'Content-Type': 'application/json',
+                    },
+                    json={'query': comment_query, 'variables': variables}
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'data' in data and data['data']['repository']['discussion']:
+                        comments = data['data']['repository']['discussion']['comments']['nodes']
+                        for c in comments:
+                            logger.debug(f"Checking comment: {c}")
+                            if str(c.get('databaseId')) == db_id:
+                                logger.info(f"Found comment by database ID: {c}")
+                                comment = c
+                                break
+                
+            if not comment:
+                error_msg = f"Comment not found. ID: {comment_id}, DB ID: {event_payload['comment']['id']}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
             
             # Respect cooldown
             self._respect_cooldown()
