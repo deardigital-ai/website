@@ -72,6 +72,17 @@ class GitHubHandler:
                     login
                   }
                   url
+                  replies(first: 100) {
+                    nodes {
+                      id
+                      databaseId
+                      body
+                      author {
+                        login
+                      }
+                      url
+                    }
+                  }
                 }
               }
             }
@@ -222,6 +233,29 @@ class GitHubHandler:
             logger.error(f"Error handling discussion: {str(e)}", exc_info=True)
             raise
 
+    def _find_comment_in_discussion(self, discussion: Dict, target_id: str, target_db_id: str) -> Dict:
+        """Find a comment or reply in a discussion by its ID or database ID."""
+        logger.info(f"Searching for comment/reply with ID: {target_id} or DB ID: {target_db_id}")
+        
+        # First check main comments
+        for comment in discussion['comments']['nodes']:
+            logger.debug(f"Checking comment - ID: {comment['id']}, DB ID: {comment.get('databaseId')}")
+            
+            if comment['id'] == target_id or str(comment.get('databaseId')) == target_db_id:
+                logger.info(f"Found matching comment: {comment}")
+                return comment
+                
+            # Check replies if this comment has any
+            if 'replies' in comment and 'nodes' in comment['replies']:
+                for reply in comment['replies']['nodes']:
+                    logger.debug(f"Checking reply - ID: {reply['id']}, DB ID: {reply.get('databaseId')}")
+                    
+                    if reply['id'] == target_id or str(reply.get('databaseId')) == target_db_id:
+                        logger.info(f"Found matching reply: {reply}")
+                        return reply
+        
+        return None
+
     def handle_discussion_comment(self, event_payload: dict):
         """Handle a discussion comment creation or edit event."""
         try:
@@ -230,6 +264,7 @@ class GitHubHandler:
             
             # Log the event payload for debugging
             logger.debug(f"Event payload: {event_payload}")
+            logger.info(f"Processing comment event for discussion #{discussion_number}")
             
             try:
                 # Get the discussion using GraphQL API
@@ -240,72 +275,14 @@ class GitHubHandler:
                 raise
             
             # Get the specific comment
-            comment = None
-            comment_id = event_payload['comment']['node_id']  # Use node_id instead of id
-            logger.info(f"Looking for comment with node_id: {comment_id}")
+            comment_id = event_payload['comment']['node_id']
+            db_id = str(event_payload['comment']['id'])
             
-            # Log all comment IDs for debugging
-            for c in discussion['comments']['nodes']:
-                logger.debug(f"Found comment with ID: {c['id']}")
-                if c['id'] == comment_id:
-                    logger.info(f"Found matching comment: {c}")
-                    comment = c
-                    break
-                    
+            # Try to find the comment or reply
+            comment = self._find_comment_in_discussion(discussion, comment_id, db_id)
+            
             if not comment:
-                # Try alternative matching using database ID
-                db_id = str(event_payload['comment']['id'])
-                logger.info(f"Comment not found by node_id, trying database ID: {db_id}")
-                
-                # Query for the specific comment using GraphQL
-                comment_query = """
-                query GetComment($owner: String!, $name: String!, $number: Int!) {
-                  repository(owner: $owner, name: $name) {
-                    discussion(number: $number) {
-                      comments(first: 100) {
-                        nodes {
-                          id
-                          databaseId
-                          url
-                          body
-                          author {
-                            login
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-                """
-                
-                variables = {
-                    'owner': repo_full_name.split('/')[0],
-                    'name': repo_full_name.split('/')[1],
-                    'number': discussion_number
-                }
-                
-                response = requests.post(
-                    'https://api.github.com/graphql',
-                    headers={
-                        'Authorization': f'Bearer {self.github_token}',
-                        'Content-Type': 'application/json',
-                    },
-                    json={'query': comment_query, 'variables': variables}
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if 'data' in data and data['data']['repository']['discussion']:
-                        comments = data['data']['repository']['discussion']['comments']['nodes']
-                        for c in comments:
-                            logger.debug(f"Checking comment: {c}")
-                            if str(c.get('databaseId')) == db_id:
-                                logger.info(f"Found comment by database ID: {c}")
-                                comment = c
-                                break
-                
-            if not comment:
-                error_msg = f"Comment not found. ID: {comment_id}, DB ID: {event_payload['comment']['id']}"
+                error_msg = f"Comment/reply not found. ID: {comment_id}, DB ID: {db_id}"
                 logger.error(error_msg)
                 raise ValueError(error_msg)
             
@@ -333,7 +310,7 @@ class GitHubHandler:
             try:
                 # Create comment using GraphQL API
                 self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
-                logger.info(f"Successfully responded to comment on discussion #{discussion_number}")
+                logger.info(f"Successfully responded to comment/reply on discussion #{discussion_number}")
             except Exception as e:
                 logger.error(f"Failed to create comment: {str(e)}")
                 raise
