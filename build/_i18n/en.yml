@@ -1,6 +1,6 @@
 global:
   title: Educational Blog
-  description: A blog dedicated to sharing educational content
+  description: A blog dedicated to sharing educational content.
   author: Your Name
   latest_posts: Latest Posts
   language_select: Language
