@@ -11,7 +11,8 @@ MODEL_CONFIG = {
     'model': 'deepseek-ai/DeepSeek-R1',
     'temperature': 0.6,
     'top_p': 0.95,
-    'max_tokens': 4096,
+    'max_tokens': None,
+    'safety_model': "meta-llama/Meta-Llama-Guard-3-8B",
 }
 
 # System prompt to guide the model's behavior
@@ -21,10 +22,8 @@ Always base your responses on factual information.
 
 Important guidelines:
 1. Provide direct responses in the requested language or format
-2. Do not output function calls or JSON formats
-3. For creative tasks like poems or stories, generate the content directly
-4. Always maintain a helpful and friendly tone
-5. If you can't do something, explain why politely
+2. Always maintain a helpful and friendly tone
+3. If you can't do something, explain why politely
 
 Remember to respond in the same language as the user's request when specifically asked."""
 

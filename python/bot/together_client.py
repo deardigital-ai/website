@@ -46,7 +46,8 @@ class TogetherClient:
                 "temperature": kwargs.get("temperature", MODEL_CONFIG["temperature"]),
                 "top_p": kwargs.get("top_p", MODEL_CONFIG["top_p"]),
                 "max_tokens": kwargs.get("max_tokens", MODEL_CONFIG["max_tokens"]),
-                "stop": ["Human:", "Assistant:"]
+                "stop": ["Human:", "Assistant:"],
+                "safety_model": MODEL_CONFIG["safety_model"]
             }
 
             # Make the API request
