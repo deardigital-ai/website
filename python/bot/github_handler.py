@@ -117,28 +117,47 @@ class GitHubHandler:
             
         return discussion_data
 
-    def _create_discussion_comment(self, repo_full_name: str, discussion_id: str, body: str) -> Dict:
-        """Create a comment on a discussion using GitHub GraphQL API."""
+    def _create_discussion_comment(self, repo_full_name: str, discussion_id: str, body: str, reply_to_id: str = None) -> Dict:
+        """Create a comment on a discussion using GitHub GraphQL API.
+        
+        If reply_to_id is provided, the comment will be created as a reply to the specified comment.
+        """
         headers = {
             'Authorization': f'Bearer {self.github_token}',
             'Content-Type': 'application/json',
         }
         
-        mutation = """
-        mutation CreateDiscussionComment($discussionId: ID!, $body: String!) {
-          addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
-            comment {
-              id
-              url
-            }
-          }
-        }
-        """
-        
+        # Add reply_to_id to variables if provided
         variables = {
             'discussionId': discussion_id,
             'body': body
         }
+        
+        if reply_to_id:
+            variables['replyToId'] = reply_to_id
+            logger.info(f"Creating reply to comment {reply_to_id}")
+            mutation = """
+            mutation CreateDiscussionCommentReply($discussionId: ID!, $body: String!, $replyToId: ID!) {
+              addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
+                comment {
+                  id
+                  url
+                }
+              }
+            }
+            """
+        else:
+            logger.info("Creating top-level comment")
+            mutation = """
+            mutation CreateDiscussionComment($discussionId: ID!, $body: String!) {
+              addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+                comment {
+                  id
+                  url
+                }
+              }
+            }
+            """
         
         response = requests.post(
             'https://api.github.com/graphql',
@@ -308,12 +327,24 @@ class GitHubHandler:
             formatted_response = self._format_response(response, comment['url'])
             
             try:
-                # Create comment using GraphQL API
-                self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
-                logger.info(f"Successfully responded to comment/reply on discussion #{discussion_number}")
+                # Create reply instead of a new comment
+                self._create_discussion_comment(
+                    repo_full_name, 
+                    discussion['id'], 
+                    formatted_response,
+                    reply_to_id=comment['id']  # Use comment ID to create a reply
+                )
+                logger.info(f"Successfully replied to comment in discussion #{discussion_number}")
             except Exception as e:
-                logger.error(f"Failed to create comment: {str(e)}")
-                raise
+                logger.error(f"Failed to create reply: {str(e)}")
+                # Fallback to creating a regular comment if reply fails
+                logger.info("Falling back to creating a regular comment")
+                try:
+                    self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
+                    logger.info(f"Successfully created fallback comment on discussion #{discussion_number}")
+                except Exception as fallback_error:
+                    logger.error(f"Fallback also failed: {str(fallback_error)}")
+                    raise
             
         except Exception as e:
             logger.error(f"Error handling discussion comment: {str(e)}", exc_info=True)
