@@ -73,6 +73,9 @@ class TogetherClient:
                 # Remove thinking parts enclosed in <think> tags
                 response_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
                 
+                # Handle case where opening <think> tag is missing but closing </think> is present
+                response_text = re.sub(r'^(.*?)</think>', '', response_text, flags=re.DOTALL)
+                
                 # Clean up the text by removing excessive newlines that might be left after removing <think> blocks
                 response_text = re.sub(r'\n{3,}', '\n\n', response_text)
                 
