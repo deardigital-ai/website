@@ -29,7 +29,9 @@ jobs:
           
       - name: Write event payload to file
         run: |
-          echo '${{ toJson(github.event) }}' | jq '.' > event_payload.json
+          cat << 'EOF' > event_payload.json
+          ${{ toJson(github.event) }}
+          EOF
           
       - name: Run discussion bot
         env:
