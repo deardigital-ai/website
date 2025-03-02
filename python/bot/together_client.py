@@ -40,13 +40,15 @@ class TogetherClient:
             formatted_prompt = f"{system_prompt}\n\n" if system_prompt else ""
             formatted_prompt += f"Human: {prompt}\n\nAssistant:"
             
-            # Prepare the request payload
+            # Prepare the request payload, using MODEL_CONFIG for all parameters
             payload = {
                 "model": MODEL_CONFIG["model"],
                 "prompt": formatted_prompt,
                 "temperature": kwargs.get("temperature", MODEL_CONFIG["temperature"]),
                 "top_p": kwargs.get("top_p", MODEL_CONFIG["top_p"]),
                 "max_tokens": kwargs.get("max_tokens", MODEL_CONFIG["max_tokens"]),
+                "top_k": kwargs.get("top_k", MODEL_CONFIG["top_k"]),
+                "repetition_penalty": kwargs.get("repetition_penalty", MODEL_CONFIG["repetition_penalty"]),
                 "stop": ["Human:", "Assistant:"],
                 "safety_model": MODEL_CONFIG["safety_model"]
             }
