@@ -179,8 +179,8 @@ class GitHubHandler:
         return history
 
     def _format_response(self, response_text: str, discussion_url: str) -> str:
-        """Format the response with signature and discussion link."""
-        return f"{response_text}{BOT_CONFIG['signature']}\n[View conversation]({discussion_url})"
+        """Return the response text without any additional formatting."""
+        return response_text
 
     def handle_discussion(self, event_payload: dict):
         """Handle a discussion creation or edit event."""
