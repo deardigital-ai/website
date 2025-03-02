@@ -2,6 +2,7 @@ import logging
 import backoff
 import requests
 from typing import Dict, Optional
+import re
 
 from python.config import API_CONFIG, MODEL_CONFIG
 
@@ -67,7 +68,16 @@ class TogetherClient:
             # Extract and return the generated text
             result = response.json()
             if "output" in result and "choices" in result["output"]:
-                return result["output"]["choices"][0]["text"].strip()
+                response_text = result["output"]["choices"][0]["text"].strip()
+                
+                # Remove thinking parts enclosed in <think> tags
+                response_text = re.sub(r'<think>.*?</think>', '', response_text, flags=re.DOTALL)
+                
+                # Clean up the text by removing excessive newlines that might be left after removing <think> blocks
+                response_text = re.sub(r'\n{3,}', '\n\n', response_text)
+                
+                # Final cleanup
+                return response_text.strip()
             else:
                 raise ValueError(f"Unexpected response format from Together API: {result}")
 
