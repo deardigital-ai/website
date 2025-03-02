@@ -1,4 +1,4 @@
-# DeepSeek-R1 Discussion Bot
+# Discussion Bot
 
 A GitHub Discussion bot and terminal chat interface powered by Together AI's DeepSeek-R1 model. The bot can automatically respond to GitHub Discussions and also function as a local chat interface.
 

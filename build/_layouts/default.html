@@ -13,6 +13,7 @@
     <link rel="alternate" hreflang="{{ lang }}" href="{{ site.url }}/{{ lang }}{{ page.url }}" />
     {% endif %}
     {% endfor %}
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Literata:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono&family=Spectral:wght@600&display=swap">
 </head>
 <body>
     <header>
@@ -33,5 +34,6 @@
         <p>&copy; {{ site.time | date: '%Y' }} {% t global.author %}. {% t footer.all_rights %}</p>
     </footer>
 
+    <script src="{{ '/assets/js/swipe-navigation.js' | relative_url }}"></script>
 </body>
 </html> 
