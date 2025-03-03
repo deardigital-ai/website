@@ -42,35 +42,30 @@ jobs:
           REPO_OWNER=$(jq -r '.repository.owner.login' event_payload.json)
           REPO_NAME=$(jq -r '.repository.name' event_payload.json)
           
-          # Create placeholder content with animated GIF
-          PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
+          # Create placeholder content with animated GIF and save to a file
+          echo '<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">
+
+          deardigital AI generating response...' > placeholder.txt
           
-          # Create the GraphQL mutation using a heredoc for better readability
-          read -r -d '' QUERY << EOM
-          mutation {
-            addDiscussionComment(input: {
-              discussionId: "$DISCUSSION_ID",
-              body: "$PLACEHOLDER_CONTENT"
-            }) {
-              comment {
-                id
-              }
+          # Create a simple GraphQL query with variables
+          echo '{
+            "query": "mutation($discussionId: ID!, $body: String!) { addDiscussionComment(input: { discussionId: $discussionId, body: $body }) { comment { id } } }",
+            "variables": {
+              "discussionId": "'$DISCUSSION_ID'",
+              "body": "'$(cat placeholder.txt | sed 's/"/\\"/g' | tr '\n' ' ')'"
             }
-          }
-          EOM
-          
-          # Escape the query properly for JSON
-          JSON_PAYLOAD="{\"query\": $(echo "$QUERY" | jq -Rs .)}"
+          }' > payload.json
           
           # Print the payload for debugging
-          echo "JSON Payload: $JSON_PAYLOAD"
+          echo "JSON Payload:"
+          cat payload.json
           
           # Create the placeholder comment using GitHub API
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            -d "$JSON_PAYLOAD" \
+            -d @payload.json \
             "https://api.github.com/graphql")
           
           # Print response for debugging
@@ -91,36 +86,31 @@ jobs:
           REPO_OWNER=$(jq -r '.repository.owner.login' event_payload.json)
           REPO_NAME=$(jq -r '.repository.name' event_payload.json)
           
-          # Create placeholder content with animated GIF
-          PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
+          # Create placeholder content with animated GIF and save to a file
+          echo '<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">
+
+          deardigital AI generating response...' > placeholder.txt
           
-          # Create the GraphQL mutation using a heredoc for better readability
-          read -r -d '' QUERY << EOM
-          mutation {
-            addDiscussionComment(input: {
-              discussionId: "$DISCUSSION_ID",
-              replyToId: "$COMMENT_ID",
-              body: "$PLACEHOLDER_CONTENT"
-            }) {
-              comment {
-                id
-              }
+          # Create a simple GraphQL query with variables
+          echo '{
+            "query": "mutation($discussionId: ID!, $replyToId: ID!, $body: String!) { addDiscussionComment(input: { discussionId: $discussionId, replyToId: $replyToId, body: $body }) { comment { id } } }",
+            "variables": {
+              "discussionId": "'$DISCUSSION_ID'",
+              "replyToId": "'$COMMENT_ID'",
+              "body": "'$(cat placeholder.txt | sed 's/"/\\"/g' | tr '\n' ' ')'"
             }
-          }
-          EOM
-          
-          # Escape the query properly for JSON
-          JSON_PAYLOAD="{\"query\": $(echo "$QUERY" | jq -Rs .)}"
+          }' > payload.json
           
           # Print the payload for debugging
-          echo "JSON Payload: $JSON_PAYLOAD"
+          echo "JSON Payload:"
+          cat payload.json
           
           # Create the placeholder reply using GitHub API
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            -d "$JSON_PAYLOAD" \
+            -d @payload.json \
             "https://api.github.com/graphql")
           
           # Print response for debugging
