@@ -583,10 +583,11 @@ class GitHubHandler:
             logger.debug(f"Repository full name: {event_payload.get('repository', {}).get('full_name')}")
             logger.debug(f"Discussion number: {event_payload.get('discussion', {}).get('number')}")
             logger.debug(f"Comment ID: {event_payload.get('comment', {}).get('id')}")
+            logger.debug(f"Comment Node ID: {event_payload.get('comment', {}).get('node_id')}")
             
             repo_full_name = event_payload['repository']['full_name']
             discussion_number = event_payload['discussion']['number']
-            comment_id = event_payload['comment']['id']
+            comment_id = event_payload['comment']['node_id']  # Use node_id instead of id
             
             try:
                 # Get discussion and comment details
