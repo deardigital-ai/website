@@ -45,12 +45,15 @@ jobs:
           # Create placeholder content with animated GIF
           PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
           
-          # Create the placeholder comment using GitHub API
+          # Create the GraphQL query as a separate variable with proper escaping
+          QUERY='mutation { addDiscussionComment(input: {discussionId: \"'"$DISCUSSION_ID"'\", body: \"'"$PLACEHOLDER_CONTENT"'\"}) { comment { id } } }'
+          
+          # Create the placeholder comment using GitHub API with properly formatted JSON
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            -d "{\"query\":\"mutation { addDiscussionComment(input: {discussionId: \\\"$DISCUSSION_ID\\\", body: \\\"$PLACEHOLDER_CONTENT\\\"}) { comment { id } } }\"}" \
+            -d "{\"query\":$(jq -n --arg q "$QUERY" '$q')}" \
             "https://api.github.com/graphql")
           
           # Print response for debugging
@@ -74,12 +77,15 @@ jobs:
           # Create placeholder content with animated GIF
           PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
           
-          # Create the placeholder reply using GitHub API
+          # Create the GraphQL query as a separate variable with proper escaping
+          QUERY='mutation { addDiscussionComment(input: {discussionId: \"'"$DISCUSSION_ID"'\", replyToId: \"'"$COMMENT_ID"'\", body: \"'"$PLACEHOLDER_CONTENT"'\"}) { comment { id } } }'
+          
+          # Create the placeholder reply using GitHub API with properly formatted JSON
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            -d "{\"query\":\"mutation { addDiscussionComment(input: {discussionId: \\\"$DISCUSSION_ID\\\", replyToId: \\\"$COMMENT_ID\\\", body: \\\"$PLACEHOLDER_CONTENT\\\"}) { comment { id } } }\"}" \
+            -d "{\"query\":$(jq -n --arg q "$QUERY" '$q')}" \
             "https://api.github.com/graphql")
           
           # Print response for debugging
