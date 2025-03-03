@@ -15,19 +15,20 @@ def parse_args():
     parser = argparse.ArgumentParser(description='DeepSeek-R1 Discussion Bot')
     parser.add_argument('--github-event', type=str, help='GitHub event type')
     parser.add_argument('--event-payload-file', type=str, help='Path to file containing GitHub event payload JSON')
+    parser.add_argument('--placeholder-id', type=str, help='ID of placeholder comment created by GitHub Action')
     return parser.parse_args()
 
-def handle_github_event(event_type: str, event_payload: dict):
+def handle_github_event(event_type: str, event_payload: dict, placeholder_id: str = None):
     """Handle GitHub discussion events."""
     github_handler = GitHubHandler()
     
     if event_type == 'discussion':
         if event_payload['action'] in ['created', 'edited']:
-            github_handler.handle_discussion(event_payload)
+            github_handler.handle_discussion(event_payload, placeholder_id)
     
     elif event_type == 'discussion_comment':
         if event_payload['action'] in ['created', 'edited']:
-            github_handler.handle_discussion_comment(event_payload)
+            github_handler.handle_discussion_comment(event_payload, placeholder_id)
 
 def main():
     setup_logging()
@@ -38,7 +39,7 @@ def main():
             # GitHub Action mode
             with open(args.event_payload_file, 'r') as f:
                 event_payload = json.load(f)
-            handle_github_event(args.github_event, event_payload)
+            handle_github_event(args.github_event, event_payload, args.placeholder_id)
         else:
             # Terminal mode
             terminal = TerminalInterface()

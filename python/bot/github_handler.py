@@ -1,7 +1,7 @@
 import logging
 import time
 import requests
-from typing import List, Dict
+from typing import List, Dict, Optional
 from github import Github
 from github.GithubObject import GithubObject
 from github.GithubException import GithubException
@@ -266,7 +266,7 @@ class GitHubHandler:
         """Return the response text without any additional formatting."""
         return response_text
 
-    def handle_discussion(self, event_payload: dict):
+    def handle_discussion(self, event_payload: dict, placeholder_id: Optional[str] = None):
         """Handle a discussion creation or edit event."""
         try:
             # Log event payload structure
@@ -285,15 +285,20 @@ class GitHubHandler:
                 logger.error(f"Failed to get discussion: {str(e)}")
                 raise
             
-            # Create placeholder comment immediately (no cooldown)
-            try:
-                logger.info("Creating placeholder comment for discussion")
-                placeholder = self._create_placeholder_comment(repo_full_name, discussion['id'])
-                logger.info(f"Placeholder comment created with ID: {placeholder['id']}")
-            except Exception as e:
-                logger.error(f"Failed to create placeholder: {str(e)}")
-                # Continue without placeholder if it fails
-                placeholder = None
+            # Check if we have a placeholder ID from GitHub Action
+            if placeholder_id:
+                logger.info(f"Using existing placeholder comment with ID: {placeholder_id}")
+                placeholder = {'id': placeholder_id}
+            else:
+                # Create placeholder comment if we don't have one from GitHub Action
+                try:
+                    logger.info("Creating placeholder comment for discussion")
+                    placeholder = self._create_placeholder_comment(repo_full_name, discussion['id'])
+                    logger.info(f"Placeholder comment created with ID: {placeholder['id']}")
+                except Exception as e:
+                    logger.error(f"Failed to create placeholder: {str(e)}")
+                    # Continue without placeholder if it fails
+                    placeholder = None
             
             # Respect cooldown before generating the actual response
             self._respect_cooldown()
@@ -382,7 +387,7 @@ class GitHubHandler:
         
         return None
 
-    def handle_discussion_comment(self, event_payload: dict):
+    def handle_discussion_comment(self, event_payload: dict, placeholder_id: Optional[str] = None):
         """Handle a discussion comment creation or edit event."""
         try:
             repo_full_name = event_payload['repository']['full_name']
@@ -416,19 +421,24 @@ class GitHubHandler:
             
             logger.info(f"Found comment: {comment['id']}")
             
-            # Create placeholder comment immediately (no cooldown)
-            try:
-                logger.info("Creating placeholder reply to comment")
-                placeholder = self._create_placeholder_comment(
-                    repo_full_name, 
-                    discussion['id'], 
-                    reply_to_id=comment['id']
-                )
-                logger.info(f"Placeholder reply created with ID: {placeholder['id']}")
-            except Exception as e:
-                logger.error(f"Failed to create placeholder reply: {str(e)}")
-                # Continue without placeholder if it fails
-                placeholder = None
+            # Check if we have a placeholder ID from GitHub Action
+            if placeholder_id:
+                logger.info(f"Using existing placeholder reply with ID: {placeholder_id}")
+                placeholder = {'id': placeholder_id}
+            else:
+                # Create placeholder comment if we don't have one from GitHub Action
+                try:
+                    logger.info("Creating placeholder reply to comment")
+                    placeholder = self._create_placeholder_comment(
+                        repo_full_name, 
+                        discussion['id'], 
+                        reply_to_id=comment['id']
+                    )
+                    logger.info(f"Placeholder reply created with ID: {placeholder['id']}")
+                except Exception as e:
+                    logger.error(f"Failed to create placeholder reply: {str(e)}")
+                    # Continue without placeholder if it fails
+                    placeholder = None
             
             # Respect cooldown before generating the actual response
             self._respect_cooldown()

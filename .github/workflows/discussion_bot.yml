@@ -32,9 +32,60 @@ jobs:
           cat << 'EOF' > event_payload.json
           ${{ toJson(github.event) }}
           EOF
+      
+      - name: Create placeholder comment for discussion
+        if: github.event_name == 'discussion'
+        id: placeholder_discussion
+        run: |
+          # Extract discussion ID and repository from event payload
+          DISCUSSION_ID=$(jq -r '.discussion.node_id' event_payload.json)
+          REPO_OWNER=$(jq -r '.repository.owner.login' event_payload.json)
+          REPO_NAME=$(jq -r '.repository.name' event_payload.json)
+          
+          # Create placeholder content with animated GIF
+          PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
+          
+          # Create the placeholder comment using GitHub API
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "{\"body\":\"$PLACEHOLDER_CONTENT\",\"discussionId\":\"$DISCUSSION_ID\"}" \
+            "https://api.github.com/graphql" \
+            -d "{\"query\":\"mutation { addDiscussionComment(input: {discussionId: \\\"$DISCUSSION_ID\\\", body: \\\"$PLACEHOLDER_CONTENT\\\"}) { comment { id } } }\"}")
+          
+          # Extract comment ID from response
+          COMMENT_ID=$(echo $RESPONSE | jq -r '.data.addDiscussionComment.comment.id')
+          echo "comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
+          echo "Created placeholder comment with ID: $COMMENT_ID"
+      
+      - name: Create placeholder reply for comment
+        if: github.event_name == 'discussion_comment'
+        id: placeholder_comment
+        run: |
+          # Extract discussion ID, comment ID and repository from event payload
+          DISCUSSION_ID=$(jq -r '.discussion.node_id' event_payload.json)
+          COMMENT_ID=$(jq -r '.comment.node_id' event_payload.json)
+          REPO_OWNER=$(jq -r '.repository.owner.login' event_payload.json)
+          REPO_NAME=$(jq -r '.repository.name' event_payload.json)
+          
+          # Create placeholder content with animated GIF
+          PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
+          
+          # Create the placeholder reply using GitHub API
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "{\"query\":\"mutation { addDiscussionComment(input: {discussionId: \\\"$DISCUSSION_ID\\\", replyToId: \\\"$COMMENT_ID\\\", body: \\\"$PLACEHOLDER_CONTENT\\\"}) { comment { id } } }\"}" \
+            "https://api.github.com/graphql")
+          
+          # Extract comment ID from response
+          REPLY_ID=$(echo $RESPONSE | jq -r '.data.addDiscussionComment.comment.id')
+          echo "comment_id=$REPLY_ID" >> $GITHUB_OUTPUT
+          echo "Created placeholder reply with ID: $REPLY_ID"
           
       - name: Run discussion bot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
-        run: python python/main.py --github-event="${{ github.event_name }}" --event-payload-file="event_payload.json" 
+          PLACEHOLDER_COMMENT_ID: ${{ github.event_name == 'discussion' && steps.placeholder_discussion.outputs.comment_id || steps.placeholder_comment.outputs.comment_id }}
+        run: python python/main.py --github-event="${{ github.event_name }}" --event-payload-file="event_payload.json" --placeholder-id="${{ env.PLACEHOLDER_COMMENT_ID }}" 
