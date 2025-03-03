@@ -288,19 +288,33 @@ class GitHubHandler:
         history = []
         
         # Add the initial discussion post
-        history.append({
-            'user_input': discussion['body'],
-            'response': None,
-            'user': discussion['author']['login']  # Keep user info for reference
-        })
+        if discussion.get('author'):
+            history.append({
+                'user_input': discussion['body'],
+                'response': None,
+                'user': discussion['author'].get('login', 'unknown')  # Keep user info for reference
+            })
+        else:
+            history.append({
+                'user_input': discussion['body'],
+                'response': None,
+                'user': 'unknown'  # Default when author info is missing
+            })
         
         # Add all comments in chronological order
-        for comment in discussion['comments']['nodes']:
-            history.append({
-                'user_input': comment['body'],
-                'response': None,
-                'user': comment['author']['login']  # Keep user info for reference
-            })
+        for comment_item in discussion['comments']['nodes']:
+            if comment_item.get('author'):
+                history.append({
+                    'user_input': comment_item['body'],
+                    'response': None,
+                    'user': comment_item['author'].get('login', 'unknown')  # Keep user info for reference
+                })
+            else:
+                history.append({
+                    'user_input': comment_item['body'],
+                    'response': None,
+                    'user': 'unknown'  # Default when author info is missing
+                })
         
         return history
 
@@ -411,8 +425,14 @@ class GitHubHandler:
         This method implements rules for when the bot should respond to a comment.
         """
         try:
+            # Check if author exists
+            if not comment.get('author'):
+                logger.error("Comment has no author field")
+                # Default to responding if there's no author information
+                return True
+                
             # Don't respond to our own comments
-            author_login = comment.get('author', {}).get('login', '')
+            author_login = comment['author'].get('login', '')
             if author_login == 'github-actions[bot]':
                 logger.info(f"Skipping comment from bot user: {author_login}")
                 return False
@@ -657,12 +677,12 @@ class GitHubHandler:
                             logger.error(f"Failed to update placeholder: {str(e)}")
                             # If updating fails, try to create a new reply
                             logger.info("Falling back to creating a new reply")
-                            new_reply = self._create_comment_reply(repo_full_name, discussion['id'], comment['id'], formatted_response)
+                            new_reply = self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response, comment['id'])
                             reply_id = new_reply['id'] if new_reply else None
                     else:
                         # If no placeholder was created, create a regular reply
                         logger.info("No valid placeholder exists, creating regular reply")
-                        new_reply = self._create_comment_reply(repo_full_name, discussion['id'], comment['id'], formatted_response)
+                        new_reply = self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response, comment['id'])
                         reply_id = new_reply['id'] if new_reply else None
                         
                     logger.info(f"Successfully responded to comment {comment_id}")
