@@ -223,7 +223,7 @@ class GitHubHandler:
         logger.info("Creating placeholder comment")
         
         placeholder_content = (
-            '<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\n'
+            '![Loading animation](https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif)\n\n'
             'deardigital AI generating response...'
         )
         
@@ -358,8 +358,8 @@ class GitHubHandler:
             
             # Format the updated response with the image
             updated_response = response_text.replace(
-                '<img src="https://github.com/user-attachments/assets/6c765944-a101-4848-b907-ba19f974e55a"', 
-                f'<img src="data:image/png;base64,{image_data}"'
+                '![Generated Image](https://github.com/user-attachments/assets/6c765944-a101-4848-b907-ba19f974e55a)', 
+                f'![{image_prompt}](data:image/png;base64,{image_data})'
             )
             
             # Update the comment with the generated image
@@ -380,8 +380,8 @@ class GitHubHandler:
                 image_prompt = self.together_client.generate_tarot_prompt(conversation_history, current_message)
                 if image_prompt:
                     # Add image placeholder that will be replaced later
-                    # Use the same format that _update_comment_with_image is expecting
-                    placeholder_image = f'<img src="https://github.com/user-attachments/assets/6c765944-a101-4848-b907-ba19f974e55a" alt="{image_prompt}" width="600">\n\n'
+                    # Use Markdown image syntax instead of HTML
+                    placeholder_image = f'![Generated Image](https://github.com/user-attachments/assets/6c765944-a101-4848-b907-ba19f974e55a)\n\n'
                     response_text = f"{placeholder_image}{response_text}"
             
             # Add footer with link to discussion
