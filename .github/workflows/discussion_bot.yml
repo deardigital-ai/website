@@ -45,15 +45,20 @@ jobs:
           # Create placeholder content with animated GIF
           PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
           
-          # Create the GraphQL query as a separate variable with proper escaping
-          QUERY='mutation { addDiscussionComment(input: {discussionId: \"'"$DISCUSSION_ID"'\", body: \"'"$PLACEHOLDER_CONTENT"'\"}) { comment { id } } }'
+          # Create the GraphQL mutation directly as a JSON string
+          JSON_PAYLOAD=$(jq -n \
+            --arg query "mutation { addDiscussionComment(input: {discussionId: \"$DISCUSSION_ID\", body: \"$PLACEHOLDER_CONTENT\"}) { comment { id } } }" \
+            '{"query": $query}')
           
-          # Create the placeholder comment using GitHub API with properly formatted JSON
+          # Print the payload for debugging
+          echo "JSON Payload: $JSON_PAYLOAD"
+          
+          # Create the placeholder comment using GitHub API
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            -d "{\"query\":$(jq -n --arg q "$QUERY" '$q')}" \
+            -d "$JSON_PAYLOAD" \
             "https://api.github.com/graphql")
           
           # Print response for debugging
@@ -77,15 +82,20 @@ jobs:
           # Create placeholder content with animated GIF
           PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
           
-          # Create the GraphQL query as a separate variable with proper escaping
-          QUERY='mutation { addDiscussionComment(input: {discussionId: \"'"$DISCUSSION_ID"'\", replyToId: \"'"$COMMENT_ID"'\", body: \"'"$PLACEHOLDER_CONTENT"'\"}) { comment { id } } }'
+          # Create the GraphQL mutation directly as a JSON string
+          JSON_PAYLOAD=$(jq -n \
+            --arg query "mutation { addDiscussionComment(input: {discussionId: \"$DISCUSSION_ID\", replyToId: \"$COMMENT_ID\", body: \"$PLACEHOLDER_CONTENT\"}) { comment { id } } }" \
+            '{"query": $query}')
           
-          # Create the placeholder reply using GitHub API with properly formatted JSON
+          # Print the payload for debugging
+          echo "JSON Payload: $JSON_PAYLOAD"
+          
+          # Create the placeholder reply using GitHub API
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             -H "Content-Type: application/json" \
-            -d "{\"query\":$(jq -n --arg q "$QUERY" '$q')}" \
+            -d "$JSON_PAYLOAD" \
             "https://api.github.com/graphql")
           
           # Print response for debugging
