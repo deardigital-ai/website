@@ -45,42 +45,39 @@ class GitHubHandler:
         self.last_response_time = time.time()
 
     def _get_discussion(self, repo_full_name: str, discussion_number: int) -> Dict:
-        """Get a discussion using GitHub GraphQL API."""
-        headers = {
-            'Authorization': f'Bearer {self.github_token}',
-            'Content-Type': 'application/json',
-        }
+        """Get discussion details using GitHub GraphQL API."""
+        logger.info(f"Getting discussion {discussion_number} from {repo_full_name}")
         
-        # Use GraphQL to get all the discussion details we need
+        # GraphQL query to get discussion details
         query = """
-        query GetDiscussion($owner: String!, $name: String!, $number: Int!) {
-          repository(owner: $owner, name: $name) {
+        query($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) {
             discussion(number: $number) {
               id
-              databaseId
-              url
+              title
               body
-              author {
-                login
+              url
+              category {
+                name
               }
               comments(first: 100) {
                 nodes {
                   id
                   databaseId
                   body
+                  createdAt
                   author {
                     login
                   }
-                  url
                   replies(first: 100) {
                     nodes {
                       id
                       databaseId
                       body
+                      createdAt
                       author {
                         login
                       }
-                      url
                     }
                   }
                 }
@@ -90,16 +87,17 @@ class GitHubHandler:
         }
         """
         
-        variables = {
-            'owner': repo_full_name.split('/')[0],
-            'name': repo_full_name.split('/')[1],
-            'number': discussion_number
-        }
+        # Split repo full name into owner and repo
+        owner, repo = repo_full_name.split('/')
         
+        # Execute GraphQL query
         response = requests.post(
             'https://api.github.com/graphql',
-            headers=headers,
-            json={'query': query, 'variables': variables}
+            headers={
+                'Authorization': f'Bearer {self.github_token}',
+                'Content-Type': 'application/json',
+            },
+            json={'query': query, 'variables': {'owner': owner, 'repo': repo, 'number': discussion_number}}
         )
         
         if response.status_code != 200:
@@ -111,11 +109,55 @@ class GitHubHandler:
             logger.error(f"GraphQL Errors: {data['errors']}")
             raise Exception(f"GraphQL Error: {data['errors'][0]['message']}")
             
-        discussion_data = data['data']['repository']['discussion']
-        if not discussion_data:
-            raise ValueError(f"Discussion #{discussion_number} not found")
+        discussion = data['data']['repository']['discussion']
+        return discussion
+
+    def _get_discussion_comment(self, comment_id: str) -> Dict:
+        """Get a discussion comment by its ID using GitHub GraphQL API."""
+        logger.info(f"Getting discussion comment with ID: {comment_id}")
+        
+        # GraphQL query to get comment details
+        query = """
+        query($id: ID!) {
+          node(id: $id) {
+            ... on DiscussionComment {
+              id
+              body
+              author {
+                login
+              }
+              discussion {
+                id
+              }
+            }
+          }
+        }
+        """
+        
+        # Execute GraphQL query
+        response = requests.post(
+            'https://api.github.com/graphql',
+            headers={
+                'Authorization': f'Bearer {self.github_token}',
+                'Content-Type': 'application/json',
+            },
+            json={'query': query, 'variables': {'id': comment_id}}
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"GraphQL Error Response: {response.text}")
+            response.raise_for_status()
             
-        return discussion_data
+        data = response.json()
+        if 'errors' in data:
+            logger.error(f"GraphQL Errors: {data['errors']}")
+            raise Exception(f"GraphQL Error: {data['errors'][0]['message']}")
+            
+        comment = data['data']['node']
+        if not comment:
+            raise Exception(f"Comment with ID {comment_id} not found")
+            
+        return comment
 
     def _create_discussion_comment(self, repo_full_name: str, discussion_id: str, body: str, reply_to_id: str = None) -> Dict:
         """Create a comment on a discussion using GitHub GraphQL API.
@@ -316,43 +358,77 @@ class GitHubHandler:
             # Don't raise the exception to prevent the workflow from failing
 
     def _format_response(self, response_text: str, discussion_url: str, conversation_history=None, current_message=None) -> str:
-        """
-        Format the response text with an image at the top.
-        
-        Args:
-            response_text: The text response from the AI
-            discussion_url: URL of the discussion
-            conversation_history: Optional conversation history for image prompt generation
-            current_message: Optional current message for image prompt generation
-            
-        Returns:
-            Formatted response with image placeholder
-        """
+        """Format the response text with appropriate styling and context."""
         try:
-            # Generate tarot card prompt if conversation history is provided
-            image_prompt = None
-            if conversation_history is not None and current_message is not None:
-                image_prompt = self.together_client.generate_tarot_prompt(
-                    conversation_history=conversation_history,
-                    current_message=current_message
-                )
-                
-                # Log the generated prompt
-                logger.info(f"Generated image prompt: {image_prompt}")
-                
-                # Add placeholder image with the prompt as alt text
-                placeholder_image = f'\n\n<img src="https://github.com/user-attachments/assets/6c765944-a101-4848-b907-ba19f974e55a" alt="{image_prompt}" width="600">\n\n'
-                
-                # Return the formatted response with placeholder image
-                return f"{placeholder_image}{response_text}"
+            # Add image placeholder if appropriate
+            if conversation_history and current_message:
+                # Generate image prompt based on conversation context
+                image_prompt = self.together_client.generate_tarot_prompt(conversation_history, current_message)
+                if image_prompt:
+                    # Add image placeholder that will be replaced later
+                    # Use the same format that _update_comment_with_image is expecting
+                    placeholder_image = f'<img src="https://github.com/user-attachments/assets/6c765944-a101-4848-b907-ba19f974e55a" alt="{image_prompt}" width="600">\n\n'
+                    response_text = f"{placeholder_image}{response_text}"
             
-            # If no conversation history, just return the response text
-            return response_text
+            # Add footer with link to discussion
+            footer = f"\n\n---\n<sub>I'm an AI assistant for deardigital.ai. [View this discussion]({discussion_url})</sub>"
+            return response_text + footer
             
         except Exception as e:
             logger.error(f"Error formatting response with image: {str(e)}")
             # Return the original response if image formatting fails
             return response_text
+
+    def _should_respond(self, discussion: Dict) -> bool:
+        """Determine if the bot should respond to this discussion.
+        
+        This method implements rules for when the bot should respond to a discussion.
+        """
+        # Always respond to discussions in the General category
+        # You can customize this logic based on your requirements
+        try:
+            # Check if the discussion is in a category we want to respond to
+            category_name = discussion.get('category', {}).get('name', '')
+            if category_name == 'General':
+                return True
+                
+            # You can add more rules here, such as:
+            # - Checking for specific labels
+            # - Looking for specific keywords in the title or body
+            # - Checking the author (e.g., don't respond to bot's own posts)
+            
+            # Default to responding to all discussions
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error determining if bot should respond: {str(e)}")
+            # Default to responding if there's an error in the logic
+            return True
+
+    def _should_respond_to_comment(self, comment: Dict) -> bool:
+        """Determine if the bot should respond to this comment.
+        
+        This method implements rules for when the bot should respond to a comment.
+        """
+        try:
+            # Don't respond to our own comments
+            author_login = comment.get('author', {}).get('login', '')
+            if author_login == 'github-actions[bot]' or author_login == 'deardigital-ai':
+                logger.info(f"Skipping comment from bot user: {author_login}")
+                return False
+                
+            # You can add more rules here, such as:
+            # - Checking for specific keywords in the comment
+            # - Checking if the comment is a reply to the bot
+            # - Checking for specific mentions (@bot)
+            
+            # Default to responding to all comments
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error determining if bot should respond to comment: {str(e)}")
+            # Default to responding if there's an error in the logic
+            return True
 
     def handle_discussion(self, event_payload: dict, placeholder_id: Optional[str] = None):
         """Handle a discussion creation or edit event."""
@@ -444,7 +520,7 @@ class GitHubHandler:
                     
                     # Generate and update with the actual image if we have a comment ID
                     if comment_id and image_prompt:
-                        self._update_comment_with_image(comment_id, image_prompt, response)
+                        self._update_comment_with_image(comment_id, image_prompt, formatted_response)
                     
                 except Exception as e:
                     logger.error(f"Failed to generate response: {str(e)}")
@@ -515,7 +591,7 @@ class GitHubHandler:
             try:
                 # Get discussion and comment details
                 discussion = self._get_discussion(repo_full_name, discussion_number)
-                comment = self._get_comment(repo_full_name, comment_id)
+                comment = self._get_discussion_comment(comment_id)
                 
                 # Check if we should respond
                 if not self._should_respond_to_comment(comment):
@@ -592,7 +668,7 @@ class GitHubHandler:
                     
                     # Generate and update with the actual image if we have a reply ID
                     if reply_id and image_prompt:
-                        self._update_comment_with_image(reply_id, image_prompt, response)
+                        self._update_comment_with_image(reply_id, image_prompt, formatted_response)
                     
                 except Exception as e:
                     logger.error(f"Failed to generate response: {str(e)}")
