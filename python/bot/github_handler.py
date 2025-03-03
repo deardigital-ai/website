@@ -176,6 +176,71 @@ class GitHubHandler:
             
         return data['data']['addDiscussionComment']['comment']
 
+    def _create_placeholder_comment(self, repo_full_name: str, discussion_id: str, reply_to_id: str = None) -> Dict:
+        """Create a placeholder comment while the actual response is being generated."""
+        logger.info("Creating placeholder comment")
+        
+        placeholder_content = (
+            '<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\n'
+            'deardigital AI generating response...'
+        )
+        
+        try:
+            comment = self._create_discussion_comment(
+                repo_full_name, 
+                discussion_id, 
+                placeholder_content, 
+                reply_to_id
+            )
+            logger.info(f"Successfully created placeholder comment with ID: {comment['id']}")
+            return comment
+        except Exception as e:
+            logger.error(f"Failed to create placeholder comment: {str(e)}")
+            raise
+
+    def _update_discussion_comment(self, comment_id: str, body: str) -> Dict:
+        """Update an existing discussion comment using GitHub GraphQL API."""
+        logger.info(f"Updating comment {comment_id}")
+        
+        headers = {
+            'Authorization': f'Bearer {self.github_token}',
+            'Content-Type': 'application/json',
+        }
+        
+        mutation = """
+        mutation UpdateDiscussionComment($commentId: ID!, $body: String!) {
+          updateDiscussionComment(input: {commentId: $commentId, body: $body}) {
+            comment {
+              id
+              url
+            }
+          }
+        }
+        """
+        
+        variables = {
+            'commentId': comment_id,
+            'body': body
+        }
+        
+        response = requests.post(
+            'https://api.github.com/graphql',
+            headers=headers,
+            json={'query': mutation, 'variables': variables}
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"GraphQL Error Response: {response.text}")
+            response.raise_for_status()
+            
+        data = response.json()
+        if 'errors' in data:
+            logger.error(f"GraphQL Errors: {data['errors']}")
+            raise Exception(f"GraphQL Error: {data['errors'][0]['message']}")
+            
+        logger.info(f"Successfully updated comment {comment_id}")
+        return data['data']['updateDiscussionComment']['comment']
+
     def _get_conversation_history(self, discussion: Dict) -> List[Dict]:
         """Reconstruct conversation history from a discussion."""
         history = []
@@ -214,38 +279,80 @@ class GitHubHandler:
             
             try:
                 # Get the discussion using GraphQL API
+                logger.info(f"Fetching discussion #{discussion_number}")
                 discussion = self._get_discussion(repo_full_name, discussion_number)
             except Exception as e:
                 logger.error(f"Failed to get discussion: {str(e)}")
                 raise
             
-            # Respect cooldown
+            # Create placeholder comment immediately (no cooldown)
+            try:
+                logger.info("Creating placeholder comment for discussion")
+                placeholder = self._create_placeholder_comment(repo_full_name, discussion['id'])
+                logger.info(f"Placeholder comment created with ID: {placeholder['id']}")
+            except Exception as e:
+                logger.error(f"Failed to create placeholder: {str(e)}")
+                # Continue without placeholder if it fails
+                placeholder = None
+            
+            # Respect cooldown before generating the actual response
             self._respect_cooldown()
             
             # Get conversation history
             history = self._get_conversation_history(discussion)
             
             # Generate response
-            prompt = self.together_client.format_conversation_history(
-                conversation_history=history,
-                current_message=discussion['body'],
-                system_prompt=self.system_prompt
-            )
-            
-            response = self.together_client.generate_response(
-                prompt=prompt,
-                system_prompt=self.system_prompt
-            )
-            
-            # Format and post response
-            formatted_response = self._format_response(response, discussion['url'])
-            
+            logger.info("Generating AI response")
             try:
-                # Create comment using GraphQL API
-                self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
+                prompt = self.together_client.format_conversation_history(
+                    conversation_history=history,
+                    current_message=discussion['body'],
+                    system_prompt=self.system_prompt
+                )
+                
+                response = self.together_client.generate_response(
+                    prompt=prompt,
+                    system_prompt=self.system_prompt
+                )
+                
+                # Format response
+                formatted_response = self._format_response(response, discussion['url'])
+                logger.info("Successfully generated response")
+                
+                # Update placeholder or create new comment
+                if placeholder:
+                    try:
+                        logger.info(f"Updating placeholder comment {placeholder['id']} with actual response")
+                        self._update_discussion_comment(placeholder['id'], formatted_response)
+                        logger.info(f"Successfully updated placeholder with actual response")
+                    except Exception as e:
+                        logger.error(f"Failed to update placeholder: {str(e)}")
+                        # If updating fails, try to create a new comment
+                        logger.info("Falling back to creating a new comment")
+                        self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
+                else:
+                    # If no placeholder was created, create a regular comment
+                    logger.info("No placeholder exists, creating regular comment")
+                    self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
+                    
                 logger.info(f"Successfully responded to discussion #{discussion_number}")
+                
             except Exception as e:
-                logger.error(f"Failed to create comment: {str(e)}")
+                logger.error(f"Failed to generate response: {str(e)}")
+                
+                # Update placeholder with error message if it exists
+                if placeholder:
+                    error_message = (
+                        "⚠️ **Error generating response**\n\n"
+                        "I encountered an issue while generating a response. "
+                        "Please try again later or contact support if the problem persists."
+                    )
+                    try:
+                        logger.info(f"Updating placeholder with error message")
+                        self._update_discussion_comment(placeholder['id'], error_message)
+                    except Exception as update_error:
+                        logger.error(f"Failed to update placeholder with error message: {str(update_error)}")
+                
                 raise
             
         except Exception as e:
@@ -287,8 +394,9 @@ class GitHubHandler:
             
             try:
                 # Get the discussion using GraphQL API
+                logger.info(f"Fetching discussion #{discussion_number}")
                 discussion = self._get_discussion(repo_full_name, discussion_number)
-                logger.debug(f"Discussion data: {discussion}")
+                logger.debug(f"Discussion data retrieved")
             except Exception as e:
                 logger.error(f"Failed to get discussion: {str(e)}")
                 raise
@@ -296,6 +404,7 @@ class GitHubHandler:
             # Get the specific comment
             comment_id = event_payload['comment']['node_id']
             db_id = str(event_payload['comment']['id'])
+            logger.info(f"Looking for comment with ID: {comment_id}, DB ID: {db_id}")
             
             # Try to find the comment or reply
             comment = self._find_comment_in_discussion(discussion, comment_id, db_id)
@@ -305,46 +414,104 @@ class GitHubHandler:
                 logger.error(error_msg)
                 raise ValueError(error_msg)
             
-            # Respect cooldown
+            logger.info(f"Found comment: {comment['id']}")
+            
+            # Create placeholder comment immediately (no cooldown)
+            try:
+                logger.info("Creating placeholder reply to comment")
+                placeholder = self._create_placeholder_comment(
+                    repo_full_name, 
+                    discussion['id'], 
+                    reply_to_id=comment['id']
+                )
+                logger.info(f"Placeholder reply created with ID: {placeholder['id']}")
+            except Exception as e:
+                logger.error(f"Failed to create placeholder reply: {str(e)}")
+                # Continue without placeholder if it fails
+                placeholder = None
+            
+            # Respect cooldown before generating the actual response
             self._respect_cooldown()
             
             # Get conversation history
             history = self._get_conversation_history(discussion)
             
             # Generate response
-            prompt = self.together_client.format_conversation_history(
-                conversation_history=history,
-                current_message=comment['body'],
-                system_prompt=self.system_prompt
-            )
-            
-            response = self.together_client.generate_response(
-                prompt=prompt,
-                system_prompt=self.system_prompt
-            )
-            
-            # Format and post response
-            formatted_response = self._format_response(response, comment['url'])
-            
+            logger.info("Generating AI response for comment")
             try:
-                # Create reply instead of a new comment
-                self._create_discussion_comment(
-                    repo_full_name, 
-                    discussion['id'], 
-                    formatted_response,
-                    reply_to_id=comment['id']  # Use comment ID to create a reply
+                prompt = self.together_client.format_conversation_history(
+                    conversation_history=history,
+                    current_message=comment['body'],
+                    system_prompt=self.system_prompt
                 )
-                logger.info(f"Successfully replied to comment in discussion #{discussion_number}")
+                
+                response = self.together_client.generate_response(
+                    prompt=prompt,
+                    system_prompt=self.system_prompt
+                )
+                
+                # Format response
+                formatted_response = self._format_response(response, comment['url'])
+                logger.info("Successfully generated response for comment")
+                
+                # Update placeholder or create new reply
+                if placeholder:
+                    try:
+                        logger.info(f"Updating placeholder reply {placeholder['id']} with actual response")
+                        self._update_discussion_comment(placeholder['id'], formatted_response)
+                        logger.info(f"Successfully updated placeholder with actual response")
+                    except Exception as e:
+                        logger.error(f"Failed to update placeholder reply: {str(e)}")
+                        # If updating fails, try to create a new reply
+                        logger.info("Falling back to creating a new reply")
+                        self._create_discussion_comment(
+                            repo_full_name, 
+                            discussion['id'], 
+                            formatted_response,
+                            reply_to_id=comment['id']
+                        )
+                else:
+                    # If no placeholder was created, create a regular reply
+                    logger.info("No placeholder exists, creating regular reply")
+                    self._create_discussion_comment(
+                        repo_full_name, 
+                        discussion['id'], 
+                        formatted_response,
+                        reply_to_id=comment['id']
+                    )
+                    
+                logger.info(f"Successfully responded to comment in discussion #{discussion_number}")
+                
             except Exception as e:
-                logger.error(f"Failed to create reply: {str(e)}")
-                # Fallback to creating a regular comment if reply fails
-                logger.info("Falling back to creating a regular comment")
-                try:
-                    self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
-                    logger.info(f"Successfully created fallback comment on discussion #{discussion_number}")
-                except Exception as fallback_error:
-                    logger.error(f"Fallback also failed: {str(fallback_error)}")
-                    raise
+                logger.error(f"Failed to generate response for comment: {str(e)}")
+                
+                # Update placeholder with error message if it exists
+                if placeholder:
+                    error_message = (
+                        "⚠️ **Error generating response**\n\n"
+                        "I encountered an issue while generating a response. "
+                        "Please try again later or contact support if the problem persists."
+                    )
+                    try:
+                        logger.info(f"Updating placeholder with error message")
+                        self._update_discussion_comment(placeholder['id'], error_message)
+                    except Exception as update_error:
+                        logger.error(f"Failed to update placeholder with error message: {str(update_error)}")
+                
+                # Try fallback to regular comment if reply fails
+                if not placeholder:
+                    try:
+                        logger.info("Attempting to create error message as regular comment")
+                        error_message = (
+                            "⚠️ **Error generating response**\n\n"
+                            "I encountered an issue while generating a response. "
+                            "Please try again later or contact support if the problem persists."
+                        )
+                        self._create_discussion_comment(repo_full_name, discussion['id'], error_message)
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback error message also failed: {str(fallback_error)}")
+                
+                raise
             
         except Exception as e:
             logger.error(f"Error handling discussion comment: {str(e)}", exc_info=True)
