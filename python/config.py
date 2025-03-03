@@ -13,7 +13,7 @@ MODEL_CONFIG = {
     'top_p': 0.95,
     'top_k': 50,
     'repetition_penalty': 1.02,
-    'max_tokens': None,
+    'max_tokens': 1024,
     'safety_model': "meta-llama/Meta-Llama-Guard-3-8B",
 }
 
