@@ -42,16 +42,25 @@ jobs:
           REPO_OWNER=$(jq -r '.repository.owner.login' event_payload.json)
           REPO_NAME=$(jq -r '.repository.name' event_payload.json)
           
-          # Create placeholder content with animated GIF - store as a variable to pass to jq
+          # Create placeholder content with animated GIF
           PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
           
-          # Create the GraphQL mutation using jq to properly handle all escaping
-          JSON_PAYLOAD=$(jq -n \
-            --arg discussionId "$DISCUSSION_ID" \
-            --arg body "$PLACEHOLDER_CONTENT" \
-            '{
-              "query": "mutation { addDiscussionComment(input: {discussionId: \"" + $discussionId + "\", body: \"" + $body + "\"}) { comment { id } } }"
-            }')
+          # Create the GraphQL mutation using a heredoc for better readability
+          read -r -d '' QUERY << EOM
+          mutation {
+            addDiscussionComment(input: {
+              discussionId: "$DISCUSSION_ID",
+              body: "$PLACEHOLDER_CONTENT"
+            }) {
+              comment {
+                id
+              }
+            }
+          }
+          EOM
+          
+          # Escape the query properly for JSON
+          JSON_PAYLOAD="{\"query\": $(echo "$QUERY" | jq -Rs .)}"
           
           # Print the payload for debugging
           echo "JSON Payload: $JSON_PAYLOAD"
@@ -82,17 +91,26 @@ jobs:
           REPO_OWNER=$(jq -r '.repository.owner.login' event_payload.json)
           REPO_NAME=$(jq -r '.repository.name' event_payload.json)
           
-          # Create placeholder content with animated GIF - store as a variable to pass to jq
+          # Create placeholder content with animated GIF
           PLACEHOLDER_CONTENT='<img src="https://user-images.githubusercontent.com/74038190/212284100-561aa473-3905-4a80-b561-0d28506553ee.gif" width="900">\n\ndeardigital AI generating response...'
           
-          # Create the GraphQL mutation using jq to properly handle all escaping
-          JSON_PAYLOAD=$(jq -n \
-            --arg discussionId "$DISCUSSION_ID" \
-            --arg commentId "$COMMENT_ID" \
-            --arg body "$PLACEHOLDER_CONTENT" \
-            '{
-              "query": "mutation { addDiscussionComment(input: {discussionId: \"" + $discussionId + "\", replyToId: \"" + $commentId + "\", body: \"" + $body + "\"}) { comment { id } } }"
-            }')
+          # Create the GraphQL mutation using a heredoc for better readability
+          read -r -d '' QUERY << EOM
+          mutation {
+            addDiscussionComment(input: {
+              discussionId: "$DISCUSSION_ID",
+              replyToId: "$COMMENT_ID",
+              body: "$PLACEHOLDER_CONTENT"
+            }) {
+              comment {
+                id
+              }
+            }
+          }
+          EOM
+          
+          # Escape the query properly for JSON
+          JSON_PAYLOAD="{\"query\": $(echo "$QUERY" | jq -Rs .)}"
           
           # Print the payload for debugging
           echo "JSON Payload: $JSON_PAYLOAD"
