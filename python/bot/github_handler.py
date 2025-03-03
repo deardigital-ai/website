@@ -413,7 +413,7 @@ class GitHubHandler:
         try:
             # Don't respond to our own comments
             author_login = comment.get('author', {}).get('login', '')
-            if author_login == 'github-actions[bot]' or author_login == 'deardigital-ai':
+            if author_login == 'github-actions[bot]':
                 logger.info(f"Skipping comment from bot user: {author_login}")
                 return False
                 
