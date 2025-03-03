@@ -283,7 +283,7 @@ class GitHubHandler:
         logger.info(f"Successfully updated comment {comment_id}")
         return data['data']['updateDiscussionComment']['comment']
 
-    def _get_conversation_history(self, discussion: Dict) -> List[Dict]:
+    def _get_conversation_history(self, discussion: Dict, comment: Dict = None) -> List[Dict]:
         """Reconstruct conversation history from a discussion."""
         history = []
         
