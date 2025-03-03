@@ -286,17 +286,17 @@ class GitHubHandler:
                 raise
             
             # Check if we have a placeholder ID from GitHub Action
-            if placeholder_id:
+            if placeholder_id and placeholder_id.lower() != "null":
                 logger.info(f"Using existing placeholder comment with ID: {placeholder_id}")
                 placeholder = {'id': placeholder_id}
             else:
                 # Create placeholder comment if we don't have one from GitHub Action
                 try:
-                    logger.info("Creating placeholder comment for discussion")
+                    logger.info("Creating placeholder comment (GitHub Action placeholder was null or not provided)")
                     placeholder = self._create_placeholder_comment(repo_full_name, discussion['id'])
                     logger.info(f"Placeholder comment created with ID: {placeholder['id']}")
                 except Exception as e:
-                    logger.error(f"Failed to create placeholder: {str(e)}")
+                    logger.error(f"Failed to create placeholder comment: {str(e)}")
                     # Continue without placeholder if it fails
                     placeholder = None
             
@@ -325,7 +325,7 @@ class GitHubHandler:
                 logger.info("Successfully generated response")
                 
                 # Update placeholder or create new comment
-                if placeholder:
+                if placeholder and placeholder.get('id') and placeholder['id'].lower() != "null":
                     try:
                         logger.info(f"Updating placeholder comment {placeholder['id']} with actual response")
                         self._update_discussion_comment(placeholder['id'], formatted_response)
@@ -337,7 +337,7 @@ class GitHubHandler:
                         self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
                 else:
                     # If no placeholder was created, create a regular comment
-                    logger.info("No placeholder exists, creating regular comment")
+                    logger.info("No valid placeholder exists, creating regular comment")
                     self._create_discussion_comment(repo_full_name, discussion['id'], formatted_response)
                     
                 logger.info(f"Successfully responded to discussion #{discussion_number}")
@@ -346,17 +346,19 @@ class GitHubHandler:
                 logger.error(f"Failed to generate response: {str(e)}")
                 
                 # Update placeholder with error message if it exists
-                if placeholder:
-                    error_message = (
-                        "⚠️ **Error generating response**\n\n"
-                        "I encountered an issue while generating a response. "
-                        "Please try again later or contact support if the problem persists."
-                    )
+                error_message = (
+                    "⚠️ **Error generating response**\n\n"
+                    "I encountered an issue while generating a response. "
+                    "Please try again later or contact support if the problem persists."
+                )
+                if placeholder and placeholder.get('id') and placeholder['id'].lower() != "null":
                     try:
                         logger.info(f"Updating placeholder with error message")
                         self._update_discussion_comment(placeholder['id'], error_message)
                     except Exception as update_error:
                         logger.error(f"Failed to update placeholder with error message: {str(update_error)}")
+                else:
+                    logger.info("No valid placeholder to update with error message")
                 
                 raise
             
@@ -422,13 +424,13 @@ class GitHubHandler:
             logger.info(f"Found comment: {comment['id']}")
             
             # Check if we have a placeholder ID from GitHub Action
-            if placeholder_id:
-                logger.info(f"Using existing placeholder reply with ID: {placeholder_id}")
+            if placeholder_id and placeholder_id.lower() != "null":
+                logger.info(f"Using existing placeholder comment with ID: {placeholder_id}")
                 placeholder = {'id': placeholder_id}
             else:
                 # Create placeholder comment if we don't have one from GitHub Action
                 try:
-                    logger.info("Creating placeholder reply to comment")
+                    logger.info("Creating placeholder reply to comment (GitHub Action placeholder was null or not provided)")
                     placeholder = self._create_placeholder_comment(
                         repo_full_name, 
                         discussion['id'], 
@@ -465,7 +467,7 @@ class GitHubHandler:
                 logger.info("Successfully generated response for comment")
                 
                 # Update placeholder or create new reply
-                if placeholder:
+                if placeholder and placeholder.get('id') and placeholder['id'].lower() != "null":
                     try:
                         logger.info(f"Updating placeholder reply {placeholder['id']} with actual response")
                         self._update_discussion_comment(placeholder['id'], formatted_response)
@@ -496,17 +498,19 @@ class GitHubHandler:
                 logger.error(f"Failed to generate response for comment: {str(e)}")
                 
                 # Update placeholder with error message if it exists
-                if placeholder:
-                    error_message = (
-                        "⚠️ **Error generating response**\n\n"
-                        "I encountered an issue while generating a response. "
-                        "Please try again later or contact support if the problem persists."
-                    )
+                error_message = (
+                    "⚠️ **Error generating response**\n\n"
+                    "I encountered an issue while generating a response. "
+                    "Please try again later or contact support if the problem persists."
+                )
+                if placeholder and placeholder.get('id') and placeholder['id'].lower() != "null":
                     try:
                         logger.info(f"Updating placeholder with error message")
                         self._update_discussion_comment(placeholder['id'], error_message)
                     except Exception as update_error:
                         logger.error(f"Failed to update placeholder with error message: {str(update_error)}")
+                else:
+                    logger.info("No valid placeholder to update with error message")
                 
                 # Try fallback to regular comment if reply fails
                 if not placeholder:

@@ -49,12 +49,15 @@ jobs:
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            -d "{\"body\":\"$PLACEHOLDER_CONTENT\",\"discussionId\":\"$DISCUSSION_ID\"}" \
-            "https://api.github.com/graphql" \
-            -d "{\"query\":\"mutation { addDiscussionComment(input: {discussionId: \\\"$DISCUSSION_ID\\\", body: \\\"$PLACEHOLDER_CONTENT\\\"}) { comment { id } } }\"}")
+            -H "Content-Type: application/json" \
+            -d "{\"query\":\"mutation { addDiscussionComment(input: {discussionId: \\\"$DISCUSSION_ID\\\", body: \\\"$PLACEHOLDER_CONTENT\\\"}) { comment { id } } }\"}" \
+            "https://api.github.com/graphql")
+          
+          # Print response for debugging
+          echo "GraphQL Response: $RESPONSE"
           
           # Extract comment ID from response
-          COMMENT_ID=$(echo $RESPONSE | jq -r '.data.addDiscussionComment.comment.id')
+          COMMENT_ID=$(echo $RESPONSE | jq -r '.data.addDiscussionComment.comment.id // "null"')
           echo "comment_id=$COMMENT_ID" >> $GITHUB_OUTPUT
           echo "Created placeholder comment with ID: $COMMENT_ID"
       
@@ -75,11 +78,15 @@ jobs:
           RESPONSE=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
             -d "{\"query\":\"mutation { addDiscussionComment(input: {discussionId: \\\"$DISCUSSION_ID\\\", replyToId: \\\"$COMMENT_ID\\\", body: \\\"$PLACEHOLDER_CONTENT\\\"}) { comment { id } } }\"}" \
             "https://api.github.com/graphql")
           
+          # Print response for debugging
+          echo "GraphQL Response: $RESPONSE"
+          
           # Extract comment ID from response
-          REPLY_ID=$(echo $RESPONSE | jq -r '.data.addDiscussionComment.comment.id')
+          REPLY_ID=$(echo $RESPONSE | jq -r '.data.addDiscussionComment.comment.id // "null"')
           echo "comment_id=$REPLY_ID" >> $GITHUB_OUTPUT
           echo "Created placeholder reply with ID: $REPLY_ID"
           
