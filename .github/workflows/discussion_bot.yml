@@ -56,10 +56,36 @@ jobs:
           import logging
           import traceback
           import sys
+          import socket
+          import re
           from datetime import datetime, timedelta
           
-          # Setup logging
+          # Setup logging with sensitive information filter
           log_file = "discussion_bot.log"
+          
+          # Create a filter to redact sensitive information
+          class SensitiveInfoFilter(logging.Filter):
+              def __init__(self):
+                  super().__init__()
+                  # Get the hostname but don't expose it in logs
+                  self.hostname = socket.gethostname()
+                  # Create patterns for sensitive information
+                  self.patterns = [
+                      (re.compile(re.escape(self.hostname), re.IGNORECASE), '[HOSTNAME]'),
+                      # Add more patterns as needed
+                      (re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b'), '[IP-ADDRESS]'),  # IP addresses
+                      (re.compile(r'token=\w+'), 'token=[REDACTED]'),  # API tokens
+                      (re.compile(r'key=\w+'), 'key=[REDACTED]'),  # API keys
+                      (re.compile(r'password=\w+'), 'password=[REDACTED]'),  # Passwords
+                  ]
+              
+              def filter(self, record):
+                  if isinstance(record.msg, str):
+                      for pattern, replacement in self.patterns:
+                          record.msg = pattern.sub(replacement, record.msg)
+                  return True
+          
+          # Configure logging
           logging.basicConfig(
               level=logging.DEBUG,  # Changed from INFO to DEBUG for more detailed logs
               format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -69,6 +95,11 @@ jobs:
               ]
           )
           logger = logging.getLogger("discussion-monitor")
+          
+          # Add sensitive info filter to all handlers
+          sensitive_filter = SensitiveInfoFilter()
+          for handler in logger.handlers:
+              handler.addFilter(sensitive_filter)
           
           # Log environment information
           logger.info("Starting discussion bot with environment:")
@@ -89,10 +120,11 @@ jobs:
               logger.debug(f"Looking for discussions updated since {since_iso}")
               
               # GraphQL query to get recent discussions
+              # Fixed query to actually use the $since variable in the filter
               query = """
               query($owner: String!, $name: String!, $since: DateTime!) {
                 repository(owner: $owner, name: $name) {
-                  discussions(first: 10, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                  discussions(first: 10, orderBy: {field: UPDATED_AT, direction: DESC}, filterBy: {updatedSince: $since}) {
                     nodes {
                       id
                       title
