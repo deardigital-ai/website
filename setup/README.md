@@ -8,18 +8,26 @@ Before setting up the discussion bot, ensure your self-hosted runner has the fol
 
 1. **Python 3.8 or higher installed**:
    - On macOS: `brew install python@3.10`
-   - On Ubuntu/Debian: `sudo apt-get install python3 python3-pip`
+   - On Ubuntu/Debian: `sudo apt-get install python3 python3-pip python3-venv`
    - On CentOS/RHEL: `sudo yum install python3 python3-pip`
 
-2. **Required Python packages**:
+2. **Python virtual environment**:
+   We use virtual environments to avoid conflicts with system Python packages:
    ```bash
+   # Create a virtual environment
+   python3 -m venv .venv
+   
+   # Activate the virtual environment
+   source .venv/bin/activate
+   
+   # Install required packages
    python3 -m pip install --upgrade pip
    python3 -m pip install requests PyGithub python-dotenv rich backoff together
    ```
 
 ### Automatic Python Setup
 
-We've included a script to automatically set up Python on your self-hosted runner:
+We've included a script to automatically set up Python and create a virtual environment on your self-hosted runner:
 
 ```bash
 # Make the script executable if needed
@@ -32,8 +40,9 @@ chmod +x setup/setup_python.sh
 This script will:
 - Detect your operating system (macOS or Linux)
 - Install Python 3 using the appropriate package manager
-- Install all required Python packages
-- Verify the installation
+- Create a Python virtual environment in the `.venv` directory
+- Install all required Python packages in the virtual environment
+- Create a convenience script `activate_env.sh` to easily activate the environment
 
 ## Option 1: Using GitHub Actions (Recommended)
 
@@ -44,27 +53,41 @@ The easiest way to run the discussion bot continuously is to use the GitHub Acti
 3. Trigger the workflow manually from the Actions tab in your repository
 4. The workflow will run continuously on your self-hosted runner
 
+The GitHub Action will:
+- Create a Python virtual environment
+- Install all required dependencies
+- Run the discussion bot inside the virtual environment
+
 ## Option 2: Using Systemd (For Linux Servers)
 
 For more reliability, you can set up the discussion bot as a systemd service:
 
 ### Automatic Setup (Recommended)
 
-1. Run the setup script as root:
+1. First, set up Python and the virtual environment:
+   ```bash
+   ./setup/setup_python.sh
+   ```
+
+2. Run the setup script as root:
    ```bash
    sudo ./setup/setup_service.sh
    ```
 
-2. Follow the prompts to enter your username, GitHub token, Together API key, and repository name
+3. Follow the prompts to enter your username, GitHub token, Together API key, and repository name
 
-3. The script will:
+4. The script will:
    - Create a systemd service file from the template
    - Save a local copy (which is ignored by git)
    - Enable and start the service
 
 ### Manual Setup
 
-1. Copy the `monitor_discussions.py` script from the GitHub Action to your server
+1. Set up Python and the virtual environment:
+   ```bash
+   ./setup/setup_python.sh
+   ```
+
 2. Create a service file from the template:
    ```bash
    cp setup/discussion-bot.service.template setup/discussion-bot.service
@@ -105,8 +128,14 @@ For a quick setup without systemd, you can use screen or tmux:
 # Install screen if not already installed
 sudo apt-get install screen
 
+# Set up Python and the virtual environment
+./setup/setup_python.sh
+
 # Start a new screen session
 screen -S discussion-bot
+
+# Activate the virtual environment
+source .venv/bin/activate
 
 # Set environment variables
 export GITHUB_TOKEN=<YOUR_GITHUB_TOKEN>
@@ -149,7 +178,7 @@ If the GitHub Action gets stuck while setting up Python, it's likely because the
    
    # For Ubuntu/Debian
    sudo apt-get update
-   sudo apt-get install python3 python3-pip
+   sudo apt-get install python3 python3-pip python3-venv
    ```
 
 3. Verify the installation:
@@ -158,10 +187,25 @@ If the GitHub Action gets stuck while setting up Python, it's likely because the
    pip3 --version
    ```
 
-4. Install required packages:
+4. Re-run the GitHub Action
+
+### "externally-managed-environment" Error
+
+If you see an error like "externally-managed-environment" when trying to install Python packages, it means you're trying to install packages in the system Python environment, which is not recommended. Instead:
+
+1. Use a virtual environment:
    ```bash
-   python3 -m pip install --upgrade pip
+   # Create a virtual environment
+   python3 -m venv .venv
+   
+   # Activate the virtual environment
+   source .venv/bin/activate
+   
+   # Now you can install packages
    python3 -m pip install -r requirements.txt
    ```
 
-5. Re-run the GitHub Action 
+2. Or use our setup script which handles this automatically:
+   ```bash
+   ./setup/setup_python.sh
+   ``` 

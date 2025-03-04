@@ -16,6 +16,14 @@ REPO_PATH=$(pwd)
 cd "$(dirname "$0")/.."
 REPO_PATH=$(pwd)
 
+# Check if virtual environment exists
+if [ ! -d "$REPO_PATH/.venv" ]; then
+  echo "Virtual environment not found at $REPO_PATH/.venv"
+  echo "Please run the setup_python.sh script first:"
+  echo "  ./setup/setup_python.sh"
+  exit 1
+fi
+
 # Get username
 echo "Enter the username to run the service as:"
 read USERNAME

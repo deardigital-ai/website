@@ -22,10 +22,20 @@ jobs:
           python3 --version
           pip3 --version
           
-      - name: Install dependencies
+      - name: Set up virtual environment
         run: |
+          # Create a virtual environment
+          python3 -m venv .venv
+          
+          # Activate the virtual environment
+          source .venv/bin/activate
+          
+          # Install dependencies in the virtual environment
           python3 -m pip install --upgrade pip
           python3 -m pip install -r requirements.txt
+          
+          # Verify installation
+          python3 -m pip list
           
       - name: Run discussion bot as a long-running service
         env:
@@ -33,6 +43,9 @@ jobs:
           TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
           REPOSITORY: ${{ github.repository }}
         run: |
+          # Activate the virtual environment
+          source .venv/bin/activate
+          
           # Create a continuous monitoring script
           cat > monitor_discussions.py << 'EOF'
           import json

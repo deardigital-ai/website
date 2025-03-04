@@ -5,6 +5,9 @@ set -e
 
 echo "Setting up Python for the discussion bot..."
 
+# Get the repository root directory
+REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
+
 # Detect OS
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
@@ -26,6 +29,11 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
         echo 'export PATH="/usr/local/opt/python@3.10/bin:$PATH"' >> ~/.bash_profile
         export PATH="/usr/local/opt/python@3.10/bin:$PATH"
     fi
+    
+    # Install pipx for managing Python applications
+    echo "Installing pipx..."
+    brew install pipx
+    pipx ensurepath
     
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     # Linux
@@ -56,13 +64,19 @@ echo "Verifying Python installation..."
 python3 --version
 pip3 --version
 
-# Install required packages
-echo "Installing required Python packages..."
+# Create a virtual environment
+echo "Creating a virtual environment..."
+cd "$REPO_DIR"
+python3 -m venv .venv
+
+# Activate the virtual environment
+echo "Activating virtual environment..."
+source .venv/bin/activate
+
+# Install required packages in the virtual environment
+echo "Installing required Python packages in the virtual environment..."
 python3 -m pip install --upgrade pip
 python3 -m pip install requests PyGithub python-dotenv rich backoff together
-
-# Get the repository root directory
-REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
 
 # Install project requirements if requirements.txt exists
 if [ -f "$REPO_DIR/requirements.txt" ]; then
@@ -70,5 +84,20 @@ if [ -f "$REPO_DIR/requirements.txt" ]; then
     python3 -m pip install -r "$REPO_DIR/requirements.txt"
 fi
 
+# Create activation script for convenience
+cat > "$REPO_DIR/activate_env.sh" << EOF
+#!/bin/bash
+# Activate the virtual environment
+source "$REPO_DIR/.venv/bin/activate"
+echo "Virtual environment activated. Run 'deactivate' to exit."
+EOF
+
+chmod +x "$REPO_DIR/activate_env.sh"
+
 echo "Python setup complete!"
+echo "To activate the virtual environment, run:"
+echo "  source .venv/bin/activate"
+echo "Or use the convenience script:"
+echo "  source ./activate_env.sh"
+echo ""
 echo "You can now run the discussion bot using the GitHub Actions workflow or one of the other methods described in the README." 
