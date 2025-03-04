@@ -160,6 +160,74 @@ screen -r discussion-bot
 - The service will automatically restart if it crashes
 - For the GitHub Action, it will restart every 6 hours to ensure it's always running
 
+## Logging and Debugging
+
+The discussion bot now includes comprehensive logging to help diagnose issues:
+
+- All logs are written to `discussion_bot.log` in the repository root
+- Logs include DEBUG, INFO, WARNING, and ERROR level messages
+- Detailed information about GitHub API requests and responses
+- Command execution details and output
+
+### Using the Log Viewer
+
+We've included a log viewer script to help you analyze the logs:
+
+```bash
+# Make the script executable if needed
+chmod +x setup/view_logs.sh
+
+# View the last 50 lines of the log
+./setup/view_logs.sh
+
+# Follow the log in real-time (like tail -f)
+./setup/view_logs.sh -f
+
+# Show only error messages
+./setup/view_logs.sh -e
+
+# Show GitHub API interactions
+./setup/view_logs.sh -g
+
+# Show the last 100 lines of placeholder creation messages
+./setup/view_logs.sh -p -l 100
+```
+
+For more options, run:
+```bash
+./setup/view_logs.sh --help
+```
+
+### Common Issues and Solutions
+
+#### Bot Not Responding to Comments
+
+If the bot isn't responding to comments, check the logs for errors:
+
+1. Look for GitHub API errors:
+   ```bash
+   ./setup/view_logs.sh -e -g
+   ```
+
+2. Check if the bot is detecting discussions:
+   ```bash
+   ./setup/view_logs.sh -i
+   ```
+
+3. Verify that the GitHub token has the correct permissions:
+   - It needs `repo` and `discussions` permissions
+   - For organization repositories, it may need additional permissions
+
+4. Check if the placeholder comments are being created:
+   ```bash
+   ./setup/view_logs.sh -p
+   ```
+
+5. Examine the command execution output:
+   ```bash
+   ./setup/view_logs.sh -c
+   ```
+
 ## Troubleshooting
 
 ### GitHub Action Stuck on Python Setup
