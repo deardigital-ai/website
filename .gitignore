@@ -61,3 +61,11 @@ wheels/
 *.log
 logs/
 bot.log
+
+# Discussion bot service files with sensitive tokens
+setup/discussion-bot.service
+setup/*.service
+setup/tokens.txt
+setup/.env
+setup/config.ini
+setup/secrets.json

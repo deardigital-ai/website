@@ -1,0 +1,17 @@
+[Unit]
+Description=GitHub Discussion Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/path/to/your/repository
+ExecStart=/usr/bin/python3 setup/monitor_discussions.py
+Restart=always
+RestartSec=10
+Environment=GITHUB_TOKEN=YOUR_GITHUB_TOKEN
+Environment=TOGETHER_API_KEY=YOUR_TOGETHER_API_KEY
+Environment=REPOSITORY=YOUR_REPOSITORY
+
+[Install]
+WantedBy=multi-user.target 
