@@ -2,13 +2,47 @@
 
 This guide explains how to set up the discussion bot as a continuous service on your self-hosted runner.
 
+## Prerequisites
+
+Before setting up the discussion bot, ensure your self-hosted runner has the following prerequisites:
+
+1. **Python 3.8 or higher installed**:
+   - On macOS: `brew install python@3.10`
+   - On Ubuntu/Debian: `sudo apt-get install python3 python3-pip`
+   - On CentOS/RHEL: `sudo yum install python3 python3-pip`
+
+2. **Required Python packages**:
+   ```bash
+   python3 -m pip install --upgrade pip
+   python3 -m pip install requests PyGithub python-dotenv rich backoff together
+   ```
+
+### Automatic Python Setup
+
+We've included a script to automatically set up Python on your self-hosted runner:
+
+```bash
+# Make the script executable if needed
+chmod +x setup/setup_python.sh
+
+# Run the setup script
+./setup/setup_python.sh
+```
+
+This script will:
+- Detect your operating system (macOS or Linux)
+- Install Python 3 using the appropriate package manager
+- Install all required Python packages
+- Verify the installation
+
 ## Option 1: Using GitHub Actions (Recommended)
 
 The easiest way to run the discussion bot continuously is to use the GitHub Actions workflow:
 
 1. Make sure your self-hosted runner is set up and connected to your repository
-2. Trigger the workflow manually from the Actions tab in your repository
-3. The workflow will run continuously on your self-hosted runner
+2. Ensure Python 3 is installed on your runner (see Prerequisites)
+3. Trigger the workflow manually from the Actions tab in your repository
+4. The workflow will run continuously on your self-hosted runner
 
 ## Option 2: Using Systemd (For Linux Servers)
 
@@ -80,7 +114,7 @@ export TOGETHER_API_KEY=<YOUR_TOGETHER_API_KEY>
 export REPOSITORY=<YOUR_REPOSITORY>
 
 # Run the script
-python setup/monitor_discussions.py
+python3 setup/monitor_discussions.py
 
 # Detach from the screen session with Ctrl+A, then D
 ```
@@ -95,4 +129,39 @@ screen -r discussion-bot
 - The bot will check for new discussions every 10 seconds
 - It keeps track of processed discussions to avoid duplicates
 - The service will automatically restart if it crashes
-- For the GitHub Action, it will restart every 6 hours to ensure it's always running 
+- For the GitHub Action, it will restart every 6 hours to ensure it's always running
+
+## Troubleshooting
+
+### GitHub Action Stuck on Python Setup
+
+If the GitHub Action gets stuck while setting up Python, it's likely because the self-hosted runner doesn't have Python properly installed or configured. Try these steps:
+
+1. Use our automatic setup script:
+   ```bash
+   ./setup/setup_python.sh
+   ```
+
+2. Or install Python 3 manually:
+   ```bash
+   # For macOS
+   brew install python@3.10
+   
+   # For Ubuntu/Debian
+   sudo apt-get update
+   sudo apt-get install python3 python3-pip
+   ```
+
+3. Verify the installation:
+   ```bash
+   python3 --version
+   pip3 --version
+   ```
+
+4. Install required packages:
+   ```bash
+   python3 -m pip install --upgrade pip
+   python3 -m pip install -r requirements.txt
+   ```
+
+5. Re-run the GitHub Action 

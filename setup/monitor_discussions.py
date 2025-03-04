@@ -149,7 +149,7 @@ def process_discussion(discussion, repo, token):
     
     # Run the discussion bot
     cmd = [
-        "python", "python/main.py",
+        "python3", "python/main.py",
         "--github-event", event_type,
         "--event-payload-file", "event_payload.json",
         "--placeholder-id", placeholder_id
