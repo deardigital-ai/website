@@ -69,3 +69,4 @@ setup/tokens.txt
 setup/.env
 setup/config.ini
 setup/secrets.json
+/temp/
