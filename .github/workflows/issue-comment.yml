@@ -1,0 +1,22 @@
+name: Issue Comment Workflow
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  comment-on-issue:
+    runs-on: self-hosted  # This specifies that the job should run on a self-hosted runner
+
+    steps:
+      - name: Comment on Issue
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: 'Thanks for creating the issue.'
+            }) 
