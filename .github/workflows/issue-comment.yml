@@ -17,7 +17,7 @@ jobs:
           ISSUE_BODY=$(echo -n "${{ github.event.issue.body }}" | base64)
           
           # Create a prompt for the AI model to analyze relevance with improved instructions
-          MODERATION_PROMPT=$(cat << 'EOT' | jq -sR .
+          MODERATION_PROMPT=$(cat << EOT | jq -sR .
           You are a helpful issue moderator for a GitHub repository. Analyze the following issue and determine if it's relevant to a software project.
 
           Guidelines for classification:
