@@ -9,14 +9,41 @@ jobs:
     runs-on: self-hosted  # This specifies that the job should run on a self-hosted runner
 
     steps:
+      - name: Generate AI Response
+        id: ai-response
+        run: |
+          # Get the issue title and body
+          ISSUE_TITLE=$(echo '${{ github.event.issue.title }}' | jq -sR .)
+          ISSUE_BODY=$(echo '${{ github.event.issue.body }}' | jq -sR .)
+          
+          # Create a prompt for the AI model (properly escaped for JSON)
+          PROMPT=$(echo "You are a helpful assistant responding to a GitHub issue. Generate a friendly, helpful response thanking the user for creating the issue and acknowledging their contribution. Keep it concise (2-3 sentences max) and professional. Here's the issue title: ${ISSUE_TITLE} and description: ${ISSUE_BODY}" | jq -sR .)
+          
+          # Call Ollama API to generate a response (using curl with properly escaped JSON)
+          RESPONSE=$(curl -s http://localhost:11434/api/generate -d "{
+            \"model\": \"llama3.2:latest\",
+            \"prompt\": ${PROMPT},
+            \"stream\": false
+          }" | jq -r '.response')
+          
+          # Save the response to an output variable, escaping newlines for GitHub Actions
+          echo "response<<EOF" >> $GITHUB_OUTPUT
+          echo "$RESPONSE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
       - name: Comment on Issue
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            github.rest.issues.createComment({
+            const aiResponse = `${{ steps.ai-response.outputs.response }}`;
+            
+            // Fallback message in case the AI response is empty
+            const message = aiResponse.trim() || 'Thanks for creating the issue. We appreciate your contribution!';
+            
+            await github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: 'Thanks for creating the issue.'
-            }) 
+              body: message
+            }); 
