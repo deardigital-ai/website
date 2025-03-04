@@ -9,20 +9,39 @@ jobs:
     runs-on: self-hosted  # This specifies that the job should run on a self-hosted runner
 
     steps:
-      - name: Generate AI Response
-        id: ai-response
+      - name: Moderate Issue Content
+        id: moderation
         run: |
           # Get the issue title and body
           ISSUE_TITLE=$(echo '${{ github.event.issue.title }}' | jq -sR .)
           ISSUE_BODY=$(echo '${{ github.event.issue.body }}' | jq -sR .)
           
-          # Create a prompt for the AI model (properly escaped for JSON)
-          PROMPT=$(echo "You are a helpful assistant responding to a GitHub issue. Generate a friendly, helpful response thanking the user for creating the issue and acknowledging their contribution. Keep it concise (2-3 sentences max) and professional. Here's the issue title: ${ISSUE_TITLE} and description: ${ISSUE_BODY}" | jq -sR .)
+          # Create a prompt for the AI model to analyze relevance
+          MODERATION_PROMPT=$(echo "You are a helpful issue moderator for a GitHub repository. Analyze the following issue and determine if it's relevant to a software project. Respond with ONLY ONE of these exact words: 'RELEVANT', 'IRRELEVANT', or 'UNCLEAR'. Don't include any other text in your response. Here's the issue title: ${ISSUE_TITLE} and description: ${ISSUE_BODY}" | jq -sR .)
           
-          # Call Ollama API to generate a response (using curl with properly escaped JSON)
+          # Call Ollama API to analyze relevance
+          MODERATION_RESULT=$(curl -s http://localhost:11434/api/generate -d "{
+            \"model\": \"llama3.2:latest\",
+            \"prompt\": ${MODERATION_PROMPT},
+            \"stream\": false
+          }" | jq -r '.response' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+          
+          # Save the moderation result
+          echo "result=${MODERATION_RESULT}" >> $GITHUB_OUTPUT
+          
+          # Create a prompt for the AI model to generate a response based on relevance
+          if [[ "$MODERATION_RESULT" == "RELEVANT" ]]; then
+            RESPONSE_PROMPT=$(echo "You are a helpful assistant responding to a GitHub issue. This issue has been determined to be RELEVANT to the project. Generate a friendly, helpful response thanking the user for creating the issue and acknowledging their contribution. Mention that the team will review it soon. Keep it concise (2-3 sentences max) and professional. Here's the issue title: ${ISSUE_TITLE} and description: ${ISSUE_BODY}" | jq -sR .)
+          elif [[ "$MODERATION_RESULT" == "IRRELEVANT" ]]; then
+            RESPONSE_PROMPT=$(echo "You are a helpful assistant responding to a GitHub issue. This issue has been determined to be IRRELEVANT to the project. Generate a polite response explaining that the issue appears to be outside the scope of this project. Suggest that they might want to check the project documentation or create a more specific issue. Keep it concise (2-3 sentences max), professional, and non-confrontational. Here's the issue title: ${ISSUE_TITLE} and description: ${ISSUE_BODY}" | jq -sR .)
+          else
+            RESPONSE_PROMPT=$(echo "You are a helpful assistant responding to a GitHub issue. The relevance of this issue is UNCLEAR. Generate a response asking for more information to help understand how this relates to the project. Be polite and helpful, suggesting what kind of details would be useful. Keep it concise (2-3 sentences max) and professional. Here's the issue title: ${ISSUE_TITLE} and description: ${ISSUE_BODY}" | jq -sR .)
+          fi
+          
+          # Call Ollama API to generate a response
           RESPONSE=$(curl -s http://localhost:11434/api/generate -d "{
             \"model\": \"llama3.2:latest\",
-            \"prompt\": ${PROMPT},
+            \"prompt\": ${RESPONSE_PROMPT},
             \"stream\": false
           }" | jq -r '.response')
           
@@ -36,10 +55,35 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const aiResponse = `${{ steps.ai-response.outputs.response }}`;
+            const aiResponse = `${{ steps.moderation.outputs.response }}`;
+            const moderationResult = '${{ steps.moderation.outputs.result }}';
             
             // Fallback message in case the AI response is empty
-            const message = aiResponse.trim() || 'Thanks for creating the issue. We appreciate your contribution!';
+            let message = aiResponse.trim() || 'Thanks for creating the issue. We appreciate your contribution!';
+            
+            // Add a label based on the moderation result
+            if (moderationResult === 'RELEVANT') {
+              await github.rest.issues.addLabels({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                labels: ['relevant']
+              });
+            } else if (moderationResult === 'IRRELEVANT') {
+              await github.rest.issues.addLabels({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                labels: ['irrelevant']
+              });
+            } else {
+              await github.rest.issues.addLabels({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                labels: ['needs-clarification']
+              });
+            }
             
             await github.rest.issues.createComment({
               issue_number: context.issue.number,
