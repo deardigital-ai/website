@@ -9,14 +9,97 @@ jobs:
     runs-on: self-hosted  # This specifies that the job should run on a self-hosted runner
 
     steps:
+      - name: Check for Duplicate Issues
+        id: duplicate_check
+        run: |
+          # Get the issue title and body
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_BODY="${{ github.event.issue.body }}"
+          
+          # Fetch recent open issues
+          OPEN_ISSUES=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=15" | \
+            jq -r '.[] | select(.number != ${{ github.event.issue.number }}) | "Issue #\(.number): \(.title)\nDescription: \(.body)\n"')
+          
+          # Create a prompt for the Ollama model to check for duplicates
+          DUPLICATE_PROMPT=$(cat << EOT | jq -sR .
+          You are a helpful issue analyzer for a GitHub repository. Your task is to determine if a new issue is likely a duplicate of existing open issues.
+
+          New Issue Title: ${ISSUE_TITLE}
+          New Issue Body: ${ISSUE_BODY}
+
+          Existing Open Issues:
+          ${OPEN_ISSUES}
+
+          Is this a duplicate? Respond with ONLY ONE of these exact formats:
+          1. If it's a duplicate: "DUPLICATE:#X" where X is the issue number it duplicates
+          2. If it's not a duplicate: "UNIQUE"
+          
+          Don't include any other text in your response.
+          EOT
+          )
+          
+          # Call Ollama API to analyze for duplicates
+          DUPLICATE_RESULT=$(curl -s http://localhost:11434/api/generate -d "{
+            \"model\": \"llama3.2:latest\",
+            \"prompt\": ${DUPLICATE_PROMPT},
+            \"stream\": false
+          }" | jq -r '.response' | tr -d '[:space:]')
+          
+          # Save the duplicate check result
+          echo "result=${DUPLICATE_RESULT}" >> $GITHUB_OUTPUT
+          
+          # Extract duplicate issue number if applicable
+          if [[ "${DUPLICATE_RESULT}" == DUPLICATE:* ]]; then
+            DUPLICATE_ISSUE=$(echo "${DUPLICATE_RESULT}" | cut -d':' -f2)
+            echo "duplicate_issue=${DUPLICATE_ISSUE}" >> $GITHUB_OUTPUT
+            echo "is_duplicate=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_duplicate=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Handle Duplicate Issue
+        if: steps.duplicate_check.outputs.is_duplicate == 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const duplicateIssue = '${{ steps.duplicate_check.outputs.duplicate_issue }}';
+            
+            // Add duplicate label
+            await github.rest.issues.addLabels({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['duplicate']
+            });
+            
+            // Comment about the duplicate
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `This appears to be a duplicate of issue #${duplicateIssue}. Closing this issue as a duplicate.`
+            });
+            
+            // Close the issue
+            await github.rest.issues.update({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              state_reason: 'duplicate'
+            });
+
       - name: Moderate Issue Content
         id: moderation
+        if: steps.duplicate_check.outputs.is_duplicate != 'true'
         run: |
-          # Get the issue title and body - using base64 encoding to avoid shell escaping issues
-          ISSUE_TITLE=$(echo -n "${{ github.event.issue.title }}" | base64)
-          ISSUE_BODY=$(echo -n "${{ github.event.issue.body }}" | base64)
+          # Get the issue title and body
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_BODY="${{ github.event.issue.body }}"
           
-          # Create a prompt for the AI model to analyze relevance with improved instructions
+          # Create a prompt for the Ollama model to analyze relevance
           MODERATION_PROMPT=$(cat << EOT | jq -sR .
           You are a helpful issue moderator for a GitHub repository. Analyze the following issue and determine if it's relevant to a software project.
 
@@ -27,10 +110,8 @@ jobs:
 
           Respond with ONLY ONE of these exact words: 'RELEVANT', 'IRRELEVANT', or 'UNCLEAR'. Don't include any other text in your response.
           
-          Here's the issue title (base64 encoded): ${ISSUE_TITLE}
-          Here's the issue description (base64 encoded): ${ISSUE_BODY}
-          
-          First, decode these values, then analyze the content and respond with exactly one word.
+          Issue Title: ${ISSUE_TITLE}
+          Issue Description: ${ISSUE_BODY}
           EOT
           )
           
@@ -44,24 +125,29 @@ jobs:
           # Save the moderation result
           echo "result=${MODERATION_RESULT}" >> $GITHUB_OUTPUT
           
-          # Decode the title and body for the response generation
-          DECODED_TITLE=$(echo -n "${{ github.event.issue.title }}" | jq -sR .)
-          DECODED_BODY=$(echo -n "${{ github.event.issue.body }}" | jq -sR .)
-          
-          # Create a prompt for the AI model to generate a response based on relevance
+          # Create a prompt for the Ollama model to generate a response based on relevance
           if [[ "$MODERATION_RESULT" == "RELEVANT" ]]; then
             RESPONSE_PROMPT=$(cat << EOT | jq -sR .
-          You are a helpful assistant responding to a GitHub issue. This issue has been determined to be RELEVANT to the project. Generate a friendly, helpful response thanking the user for creating the issue and acknowledging their contribution. Mention that the team will review it soon. Keep it concise (2-3 sentences max) and professional. Here's the issue title: ${DECODED_TITLE} and description: ${DECODED_BODY}
+          You are a helpful assistant responding to a GitHub issue. This issue has been determined to be RELEVANT to the project. Generate a friendly, helpful response thanking the user for creating the issue and acknowledging their contribution. Mention that the team will review it soon. Keep it concise (2-3 sentences max) and professional. 
+          
+          Issue Title: ${ISSUE_TITLE}
+          Issue Description: ${ISSUE_BODY}
           EOT
             )
           elif [[ "$MODERATION_RESULT" == "IRRELEVANT" ]]; then
             RESPONSE_PROMPT=$(cat << EOT | jq -sR .
-          You are a helpful assistant responding to a GitHub issue. This issue has been determined to be IRRELEVANT to the project. Generate a polite response explaining that the issue appears to be outside the scope of this project. Suggest that they might want to check the project documentation or create a more specific issue. Keep it concise (2-3 sentences max), professional, and non-confrontational. Here's the issue title: ${DECODED_TITLE} and description: ${DECODED_BODY}
+          You are a helpful assistant responding to a GitHub issue. This issue has been determined to be IRRELEVANT to the project. Generate a polite response explaining that the issue appears to be outside the scope of this project. Suggest that they might want to check the project documentation or create a more specific issue. Keep it concise (2-3 sentences max), professional, and non-confrontational.
+          
+          Issue Title: ${ISSUE_TITLE}
+          Issue Description: ${ISSUE_BODY}
           EOT
             )
           else
             RESPONSE_PROMPT=$(cat << EOT | jq -sR .
-          You are a helpful assistant responding to a GitHub issue. The relevance of this issue is UNCLEAR. Generate a response asking for more information to help understand how this relates to the project. Be polite and helpful, suggesting what kind of details would be useful. Keep it concise (2-3 sentences max) and professional. Here's the issue title: ${DECODED_TITLE} and description: ${DECODED_BODY}
+          You are a helpful assistant responding to a GitHub issue. The relevance of this issue is UNCLEAR. Generate a response asking for more information to help understand how this relates to the project. Be polite and helpful, suggesting what kind of details would be useful. Keep it concise (2-3 sentences max) and professional.
+          
+          Issue Title: ${ISSUE_TITLE}
+          Issue Description: ${ISSUE_BODY}
           EOT
             )
           fi
@@ -79,6 +165,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
       
       - name: Comment on Issue
+        if: steps.duplicate_check.outputs.is_duplicate != 'true'
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
