@@ -21,30 +21,28 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/issues?state=open&per_page=15" | \
             jq -r '.[] | select(.number != ${{ github.event.issue.number }}) | "Issue #\(.number): \(.title)\nDescription: \(.body)\n"')
           
-          # Create a prompt for the Ollama model to check for duplicates
-          DUPLICATE_PROMPT=$(cat << EOT | jq -sR .
-          You are a helpful issue analyzer for a GitHub repository. Your task is to determine if a new issue is likely a duplicate of existing open issues.
+          # Create the prompt text
+          PROMPT_TEXT="You are a helpful issue analyzer for a GitHub repository. Your task is to determine if a new issue is likely a duplicate of existing open issues.
 
-          New Issue Title: ${ISSUE_TITLE}
-          New Issue Body: ${ISSUE_BODY}
+          New Issue Title: $ISSUE_TITLE
+          New Issue Body: $ISSUE_BODY
 
           Existing Open Issues:
-          ${OPEN_ISSUES}
+          $OPEN_ISSUES
 
           Is this a duplicate? Respond with ONLY ONE of these exact formats:
-          1. If it's a duplicate: "DUPLICATE:#X" where X is the issue number it duplicates
-          2. If it's not a duplicate: "UNIQUE"
+          1. If it's a duplicate: \"DUPLICATE:#X\" where X is the issue number it duplicates
+          2. If it's not a duplicate: \"UNIQUE\"
           
-          Don't include any other text in your response.
-          EOT
-          )
+          Don't include any other text in your response."
+          
+          # Create JSON payload for Ollama
+          JSON_PAYLOAD="{\"model\": \"llama3.2:latest\", \"prompt\": $(echo "$PROMPT_TEXT" | jq -Rs .), \"stream\": false}"
           
           # Call Ollama API to analyze for duplicates
-          DUPLICATE_RESULT=$(curl -s http://localhost:11434/api/generate -d "{
-            \"model\": \"llama3.2:latest\",
-            \"prompt\": ${DUPLICATE_PROMPT},
-            \"stream\": false
-          }" | jq -r '.response' | tr -d '[:space:]')
+          DUPLICATE_RESULT=$(curl -s -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD" \
+            http://localhost:11434/api/generate | jq -r '.response' | tr -d '[:space:]')
           
           # Save the duplicate check result
           echo "result=${DUPLICATE_RESULT}" >> $GITHUB_OUTPUT
@@ -99,9 +97,8 @@ jobs:
           ISSUE_TITLE="${{ github.event.issue.title }}"
           ISSUE_BODY="${{ github.event.issue.body }}"
           
-          # Create a prompt for the Ollama model to analyze relevance
-          MODERATION_PROMPT=$(cat << EOT | jq -sR .
-          You are a helpful issue moderator for a GitHub repository. Analyze the following issue and determine if it's relevant to a software project.
+          # Create the moderation prompt text
+          MODERATION_TEXT="You are a helpful issue moderator for a GitHub repository. Analyze the following issue and determine if it's relevant to a software project.
 
           Guidelines for classification:
           - RELEVANT: Issues that describe bugs, feature requests, or questions about the software's functionality. Even vague reports about software not working should be considered RELEVANT if they appear to be about the software.
@@ -110,54 +107,45 @@ jobs:
 
           Respond with ONLY ONE of these exact words: 'RELEVANT', 'IRRELEVANT', or 'UNCLEAR'. Don't include any other text in your response.
           
-          Issue Title: ${ISSUE_TITLE}
-          Issue Description: ${ISSUE_BODY}
-          EOT
-          )
+          Issue Title: $ISSUE_TITLE
+          Issue Description: $ISSUE_BODY"
+          
+          # Create JSON payload for Ollama
+          MODERATION_PAYLOAD="{\"model\": \"llama3.2:latest\", \"prompt\": $(echo "$MODERATION_TEXT" | jq -Rs .), \"stream\": false}"
           
           # Call Ollama API to analyze relevance
-          MODERATION_RESULT=$(curl -s http://localhost:11434/api/generate -d "{
-            \"model\": \"llama3.2:latest\",
-            \"prompt\": ${MODERATION_PROMPT},
-            \"stream\": false
-          }" | jq -r '.response' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+          MODERATION_RESULT=$(curl -s -H "Content-Type: application/json" \
+            -d "$MODERATION_PAYLOAD" \
+            http://localhost:11434/api/generate | jq -r '.response' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
           
           # Save the moderation result
           echo "result=${MODERATION_RESULT}" >> $GITHUB_OUTPUT
           
-          # Create a prompt for the Ollama model to generate a response based on relevance
+          # Create response prompt based on moderation result
           if [[ "$MODERATION_RESULT" == "RELEVANT" ]]; then
-            RESPONSE_PROMPT=$(cat << EOT | jq -sR .
-          You are a helpful assistant responding to a GitHub issue. This issue has been determined to be RELEVANT to the project. Generate a friendly, helpful response thanking the user for creating the issue and acknowledging their contribution. Mention that the team will review it soon. Keep it concise (2-3 sentences max) and professional. 
-          
-          Issue Title: ${ISSUE_TITLE}
-          Issue Description: ${ISSUE_BODY}
-          EOT
-            )
+            RESPONSE_TEXT="You are a helpful assistant responding to a GitHub issue. This issue has been determined to be RELEVANT to the project. Generate a friendly, helpful response thanking the user for creating the issue and acknowledging their contribution. Mention that the team will review it soon. Keep it concise (2-3 sentences max) and professional. 
+            
+            Issue Title: $ISSUE_TITLE
+            Issue Description: $ISSUE_BODY"
           elif [[ "$MODERATION_RESULT" == "IRRELEVANT" ]]; then
-            RESPONSE_PROMPT=$(cat << EOT | jq -sR .
-          You are a helpful assistant responding to a GitHub issue. This issue has been determined to be IRRELEVANT to the project. Generate a polite response explaining that the issue appears to be outside the scope of this project. Suggest that they might want to check the project documentation or create a more specific issue. Keep it concise (2-3 sentences max), professional, and non-confrontational.
-          
-          Issue Title: ${ISSUE_TITLE}
-          Issue Description: ${ISSUE_BODY}
-          EOT
-            )
+            RESPONSE_TEXT="You are a helpful assistant responding to a GitHub issue. This issue has been determined to be IRRELEVANT to the project. Generate a polite response explaining that the issue appears to be outside the scope of this project. Suggest that they might want to check the project documentation or create a more specific issue. Keep it concise (2-3 sentences max), professional, and non-confrontational.
+            
+            Issue Title: $ISSUE_TITLE
+            Issue Description: $ISSUE_BODY"
           else
-            RESPONSE_PROMPT=$(cat << EOT | jq -sR .
-          You are a helpful assistant responding to a GitHub issue. The relevance of this issue is UNCLEAR. Generate a response asking for more information to help understand how this relates to the project. Be polite and helpful, suggesting what kind of details would be useful. Keep it concise (2-3 sentences max) and professional.
-          
-          Issue Title: ${ISSUE_TITLE}
-          Issue Description: ${ISSUE_BODY}
-          EOT
-            )
+            RESPONSE_TEXT="You are a helpful assistant responding to a GitHub issue. The relevance of this issue is UNCLEAR. Generate a response asking for more information to help understand how this relates to the project. Be polite and helpful, suggesting what kind of details would be useful. Keep it concise (2-3 sentences max) and professional.
+            
+            Issue Title: $ISSUE_TITLE
+            Issue Description: $ISSUE_BODY"
           fi
           
+          # Create JSON payload for Ollama
+          RESPONSE_PAYLOAD="{\"model\": \"llama3.2:latest\", \"prompt\": $(echo "$RESPONSE_TEXT" | jq -Rs .), \"stream\": false}"
+          
           # Call Ollama API to generate a response
-          RESPONSE=$(curl -s http://localhost:11434/api/generate -d "{
-            \"model\": \"llama3.2:latest\",
-            \"prompt\": ${RESPONSE_PROMPT},
-            \"stream\": false
-          }" | jq -r '.response')
+          RESPONSE=$(curl -s -H "Content-Type: application/json" \
+            -d "$RESPONSE_PAYLOAD" \
+            http://localhost:11434/api/generate | jq -r '.response')
           
           # Save the response to an output variable, escaping newlines for GitHub Actions
           echo "response<<EOF" >> $GITHUB_OUTPUT
