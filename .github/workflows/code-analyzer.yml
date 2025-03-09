@@ -110,7 +110,7 @@ jobs:
           SUGGESTIONS="[]"
           
           # Process each file
-          for FILE in $SELECTED_FILES; do
+          while IFS= read -r FILE || [[ -n "$FILE" ]]; do
             if [ ! -f "$FILE" ]; then
               echo "File $FILE no longer exists, skipping"
               continue
@@ -118,17 +118,23 @@ jobs:
             
             echo "Analyzing $FILE"
             
-            # Get file content
-            FILE_CONTENT=$(cat "$FILE")
+            # Create a temporary file to store the file content
+            TEMP_CONTENT_FILE=$(mktemp)
+            
+            # Save file content to temporary file
+            cat "$FILE" > "$TEMP_CONTENT_FILE"
             
             # Create file-specific prompt
             FILE_PROMPT="Analyzing file: $FILE
 
-            ```
-            $FILE_CONTENT
-            ```
+            \`\`\`
+            $(cat "$TEMP_CONTENT_FILE")
+            \`\`\`
 
             Based on this file and the repository context, suggest potential features, bugs, or improvements. Be creative and thorough in your analysis."
+            
+            # Clean up temporary file
+            rm "$TEMP_CONTENT_FILE"
             
             # Create JSON payload for Ollama
             JSON_PAYLOAD="{\"model\": \"qwq:latest\", \"prompt\": $(echo "$PROMPT_TEXT\n\n$FILE_PROMPT" | jq -Rs .), \"stream\": false}"
@@ -160,7 +166,7 @@ jobs:
             else
               SUGGESTIONS=$(echo "$SUGGESTIONS" "$FILE_SUGGESTIONS" | jq -s 'add | unique')
             fi
-          done
+          done <<< "$SELECTED_FILES"
           
           # Save the suggestions to an output variable
           echo "suggestions<<EOF" >> $GITHUB_OUTPUT
