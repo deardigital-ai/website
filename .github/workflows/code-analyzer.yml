@@ -31,8 +31,33 @@ jobs:
           git rev-parse HEAD > ".last_code_analysis_run"
           
           # Randomly select up to 5 files to analyze in this run
-          # This prevents analyzing the entire codebase every 5 minutes
-          SELECTED_FILES=$(echo "$CODE_FILES" | shuf -n 5)
+          # Using a macOS-compatible approach instead of 'shuf'
+          # Count the number of files
+          FILE_COUNT=$(echo "$CODE_FILES" | wc -l | tr -d ' ')
+          
+          # If we have 5 or fewer files, use all of them
+          if [ "$FILE_COUNT" -le 5 ]; then
+            SELECTED_FILES="$CODE_FILES"
+          else
+            # Generate 5 random indices
+            INDICES=""
+            for i in {1..5}; do
+              # Generate a random number between 1 and FILE_COUNT
+              RANDOM_INDEX=$(( (RANDOM % FILE_COUNT) + 1 ))
+              INDICES="$INDICES $RANDOM_INDEX"
+            done
+            
+            # Use sed to extract the files at those indices
+            SELECTED_FILES=""
+            for INDEX in $INDICES; do
+              FILE=$(echo "$CODE_FILES" | sed -n "${INDEX}p")
+              if [ -n "$SELECTED_FILES" ]; then
+                SELECTED_FILES="${SELECTED_FILES}"$'\n'"${FILE}"
+              else
+                SELECTED_FILES="${FILE}"
+              fi
+            done
+          fi
           
           echo "has_files=true" >> $GITHUB_OUTPUT
           
