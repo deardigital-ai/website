@@ -1,0 +1,232 @@
+name: Code Analysis and Issue Creation
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Run every 5 minutes
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  analyze-code:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get recent changes
+        id: recent-changes
+        run: |
+          # Get changes in the last 24 hours or since the last run
+          LAST_RUN_FILE=".last_code_analysis_run"
+          
+          if [ -f "$LAST_RUN_FILE" ]; then
+            LAST_RUN=$(cat "$LAST_RUN_FILE")
+            CHANGED_FILES=$(git diff --name-only $LAST_RUN HEAD)
+          else
+            # If no last run, check changes in the last 24 hours
+            CHANGED_FILES=$(git diff --name-only "@{24.hours.ago}" HEAD)
+          fi
+          
+          # Save current commit hash for next run
+          git rev-parse HEAD > "$LAST_RUN_FILE"
+          
+          # Filter for code files only
+          CODE_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(js|jsx|ts|tsx|py|go|java|rb|php|c|cpp|h|hpp|cs)$' || echo "")
+          
+          if [ -z "$CODE_FILES" ]; then
+            echo "No relevant code files changed recently."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          
+          # Save the list to an output variable
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CODE_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Analyze codebase
+        id: code-analysis
+        if: steps.recent-changes.outputs.has_changes == 'true'
+        run: |
+          # Get the list of changed files
+          CHANGED_FILES="${{ steps.recent-changes.outputs.files }}"
+          
+          # Get repository structure for context
+          REPO_STRUCTURE=$(find . -type f -name "*.js" -o -name "*.jsx" -o -name "*.ts" -o -name "*.tsx" -o -name "*.py" -o -name "*.go" -o -name "*.java" -o -name "*.rb" -o -name "*.php" -o -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cs" | sort)
+          
+          # Create the prompt text
+          PROMPT_TEXT="You are an expert code analyzer. Analyze the following repository structure and recently changed files to identify potential features, bugs, and improvements.
+
+          Repository Structure (partial):
+          $REPO_STRUCTURE
+
+          Recently Changed Files:
+          $CHANGED_FILES
+
+          For each changed file, I will provide the content. Based on your analysis, suggest:
+          1. New features that could enhance the codebase
+          2. Potential bugs or issues that need fixing
+          3. Code improvements for better performance, readability, or maintainability
+
+          Format your response as a JSON array with the following structure:
+          [
+            {
+              \"type\": \"feature\"|\"bug\"|\"improvement\",
+              \"title\": \"Brief, descriptive title\",
+              \"description\": \"Detailed description of the issue\",
+              \"priority\": \"high\"|\"medium\"|\"low\",
+              \"related_files\": [\"file1\", \"file2\"]
+            },
+            ...
+          ]
+
+          Limit your suggestions to the 3-5 most important ones. Be specific and actionable."
+          
+          # Initialize suggestions array
+          SUGGESTIONS="[]"
+          
+          # Process each file
+          for FILE in $CHANGED_FILES; do
+            if [ ! -f "$FILE" ]; then
+              echo "File $FILE no longer exists, skipping"
+              continue
+            fi
+            
+            echo "Analyzing $FILE"
+            
+            # Get file content
+            FILE_CONTENT=$(cat "$FILE")
+            
+            # Create file-specific prompt
+            FILE_PROMPT="Analyzing file: $FILE
+
+            ```
+            $FILE_CONTENT
+            ```
+
+            Based on this file and the repository context, suggest potential features, bugs, or improvements."
+            
+            # Create JSON payload for Ollama
+            JSON_PAYLOAD="{\"model\": \"qwq:latest\", \"prompt\": $(echo "$PROMPT_TEXT\n\n$FILE_PROMPT" | jq -Rs .), \"stream\": false}"
+            
+            # Call Ollama API to analyze code
+            FILE_ANALYSIS=$(curl -s -H "Content-Type: application/json" \
+              -d "$JSON_PAYLOAD" \
+              http://localhost:11434/api/generate | jq -r '.response' | \
+              # Filter out <think> tags and their content
+              sed -E 's/<think>.*<\/think>//g')
+            
+            # Extract JSON array from response (handling potential text before/after JSON)
+            FILE_SUGGESTIONS=$(echo "$FILE_ANALYSIS" | grep -o '\[.*\]' || echo "[]")
+            
+            # If no valid JSON found, try to extract from markdown code blocks
+            if [ "$FILE_SUGGESTIONS" = "[]" ]; then
+              FILE_SUGGESTIONS=$(echo "$FILE_ANALYSIS" | grep -o '```json\s*\[.*\]\s*```' | sed 's/```json//g' | sed 's/```//g' || echo "[]")
+            fi
+            
+            # Ensure we have valid JSON
+            if ! echo "$FILE_SUGGESTIONS" | jq empty 2>/dev/null; then
+              echo "Invalid JSON response for $FILE, skipping"
+              continue
+            fi
+            
+            # Merge with existing suggestions
+            if [ "$SUGGESTIONS" = "[]" ]; then
+              SUGGESTIONS="$FILE_SUGGESTIONS"
+            else
+              SUGGESTIONS=$(echo "$SUGGESTIONS" "$FILE_SUGGESTIONS" | jq -s 'add | unique')
+            fi
+          done
+          
+          # Save the suggestions to an output variable
+          echo "suggestions<<EOF" >> $GITHUB_OUTPUT
+          echo "$SUGGESTIONS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub issues
+        if: steps.recent-changes.outputs.has_changes == 'true'
+        uses: actions/github-script@v6
+        env:
+          SUGGESTIONS: ${{ steps.code-analysis.outputs.suggestions }}
+        with:
+          github-token: ${{ secrets.PAT }}  # Use custom PAT instead of default GITHUB_TOKEN
+          script: |
+            const suggestions = JSON.parse(process.env.SUGGESTIONS || '[]');
+            
+            if (!suggestions.length) {
+              console.log('No suggestions to create issues for');
+              return;
+            }
+            
+            // Define issue templates for each type
+            const issueTemplates = {
+              feature: {
+                title: '✨ Feature: {title}',
+                body: `## Feature Request\n\n**Description**\n{description}\n\n**Priority**\n{priority}\n\n**Related Files**\n{related_files}\n\n---\n*This issue was automatically generated by the code analysis system.*`
+              },
+              bug: {
+                title: '🐛 Bug: {title}',
+                body: `## Bug Report\n\n**Description**\n{description}\n\n**Priority**\n{priority}\n\n**Related Files**\n{related_files}\n\n---\n*This issue was automatically generated by the code analysis system.*`
+              },
+              improvement: {
+                title: '🔧 Improvement: {title}',
+                body: `## Improvement Suggestion\n\n**Description**\n{description}\n\n**Priority**\n{priority}\n\n**Related Files**\n{related_files}\n\n---\n*This issue was automatically generated by the code analysis system.*`
+              }
+            };
+            
+            // Process each suggestion
+            for (const suggestion of suggestions) {
+              try {
+                const template = issueTemplates[suggestion.type];
+                if (!template) {
+                  console.log(`Unknown suggestion type: ${suggestion.type}`);
+                  continue;
+                }
+                
+                // Format related files as a list
+                const relatedFiles = suggestion.related_files && suggestion.related_files.length 
+                  ? suggestion.related_files.map(file => `- \`${file}\``).join('\n')
+                  : 'None specified';
+                
+                // Create the issue
+                const title = template.title.replace('{title}', suggestion.title);
+                const body = template.body
+                  .replace('{description}', suggestion.description)
+                  .replace('{priority}', suggestion.priority || 'medium')
+                  .replace('{related_files}', relatedFiles);
+                
+                // Check if a similar issue already exists (to avoid duplicates)
+                const existingIssues = await github.rest.issues.listForRepo({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  per_page: 100
+                });
+                
+                const similarIssueExists = existingIssues.data.some(issue => 
+                  issue.title.toLowerCase().includes(suggestion.title.toLowerCase())
+                );
+                
+                if (similarIssueExists) {
+                  console.log(`Similar issue already exists for: ${suggestion.title}`);
+                  continue;
+                }
+                
+                // Create the issue
+                const response = await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: title,
+                  body: body,
+                  labels: [suggestion.type, suggestion.priority || 'medium']
+                });
+                
+                console.log(`Created issue #${response.data.number}: ${title}`);
+              } catch (error) {
+                console.error(`Error creating issue for suggestion: ${suggestion.title}`, error);
+              }
+            } 
