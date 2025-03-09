@@ -1,0 +1,156 @@
+name: Test Case Generator
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - '**.js'
+      - '**.jsx'
+      - '**.ts'
+      - '**.tsx'
+      - '**.py'
+      - '!**/*.test.*'
+      - '!**/*.spec.*'
+      - '!**/test/**'
+      - '!**/tests/**'
+
+jobs:
+  generate-tests:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          # Get list of changed files, excluding test files
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | \
+            grep -E '\.js$|\.jsx$|\.ts$|\.tsx$|\.py$' | \
+            grep -v -E '\.test\.|\.spec\.|/test/|/tests/' || echo "")
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No relevant files changed. Skipping test generation."
+            exit 0
+          fi
+          
+          # Save the list to an output variable
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate test cases
+        id: test-generation
+        run: |
+          # Get the list of changed files
+          CHANGED_FILES="${{ steps.changed-files.outputs.files }}"
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No files to generate tests for"
+            exit 0
+          fi
+          
+          # Initialize results
+          TEST_RESULTS=""
+          
+          # Process each file
+          echo "$CHANGED_FILES" | while read -r FILE; do
+            if [ ! -f "$FILE" ]; then
+              echo "File $FILE no longer exists, skipping"
+              continue
+            fi
+            
+            echo "Generating test cases for $FILE"
+            
+            # Get file content
+            FILE_CONTENT=$(cat "$FILE")
+            
+            # Determine file type and test framework
+            FILE_EXT="${FILE##*.}"
+            TEST_FRAMEWORK=""
+            TEST_FILE=""
+            
+            if [[ "$FILE_EXT" == "js" || "$FILE_EXT" == "jsx" ]]; then
+              TEST_FRAMEWORK="Jest"
+              TEST_FILE="${FILE%.*}.test.js"
+            elif [[ "$FILE_EXT" == "ts" || "$FILE_EXT" == "tsx" ]]; then
+              TEST_FRAMEWORK="Jest with TypeScript"
+              TEST_FILE="${FILE%.*}.test.ts"
+            elif [[ "$FILE_EXT" == "py" ]]; then
+              TEST_FRAMEWORK="pytest"
+              TEST_FILE="test_$(basename "$FILE")"
+            fi
+            
+            # Create the prompt text
+            PROMPT_TEXT="You are a test engineer. Generate comprehensive test cases for the following code file using $TEST_FRAMEWORK.
+
+            File: $FILE
+            
+            ```
+            $FILE_CONTENT
+            ```
+            
+            Generate test cases that:
+            1. Test the main functionality of the code
+            2. Include edge cases and error handling
+            3. Achieve good code coverage
+            4. Follow best practices for $TEST_FRAMEWORK
+            
+            Provide the complete test file content that can be saved directly to $TEST_FILE.
+            Include necessary imports, setup, and teardown code.
+            Add comments explaining the purpose of each test case.
+            Make sure the tests are realistic and actually test the functionality of the code."
+            
+            # Create JSON payload for Ollama
+            JSON_PAYLOAD="{\"model\": \"qwq:latest\", \"prompt\": $(echo "$PROMPT_TEXT" | jq -Rs .), \"stream\": false}"
+            
+            # Call Ollama API to generate test cases
+            TEST_CODE=$(curl -s -H "Content-Type: application/json" \
+              -d "$JSON_PAYLOAD" \
+              http://localhost:11434/api/generate | jq -r '.response' | \
+              # Filter out <think> tags and their content
+              sed -E 's/<think>.*<\/think>//g')
+            
+            # Add to results
+            TEST_RESULTS="${TEST_RESULTS}
+            
+            ## Test File for \`$FILE\`
+            
+            Save to: \`$TEST_FILE\`
+            
+            \`\`\`${FILE_EXT}
+            ${TEST_CODE}
+            \`\`\`
+            
+            ---"
+          done
+          
+          # Save the test results to an output variable
+          echo "results<<EOF" >> $GITHUB_OUTPUT
+          echo "$TEST_RESULTS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Comment on PR
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const testResults = `${{ steps.test-generation.outputs.results }}`;
+            
+            if (!testResults || testResults.trim() === '') {
+              console.log('No test results to comment');
+              return;
+            }
+            
+            // Add a header to the comment
+            const comment = `## Suggested Test Cases 🧪\n\nHere are some suggested test cases for the changed files:\n\n${testResults}\n\n---\n*These are auto-generated test suggestions. You can copy these files to your project and modify them as needed.*`;
+            
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            }); 

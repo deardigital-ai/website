@@ -1,0 +1,117 @@
+name: Documentation Generator
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.js'
+      - '**.jsx'
+      - '**.ts'
+      - '**.tsx'
+      - '**.py'
+
+jobs:
+  generate-docs:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          # Get list of changed files
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | grep -E '\.js$|\.jsx$|\.ts$|\.tsx$|\.py$' || echo "")
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No relevant files changed. Skipping documentation generation."
+            exit 0
+          fi
+          
+          # Save the list to an output variable
+          echo "files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate documentation
+        id: generate-docs
+        run: |
+          # Get the list of changed files
+          CHANGED_FILES="${{ steps.changed-files.outputs.files }}"
+          
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "No files to process"
+            exit 0
+          fi
+          
+          # Create a directory for documentation
+          mkdir -p docs/auto-generated
+          
+          # Process each file
+          echo "$CHANGED_FILES" | while read -r FILE; do
+            if [ ! -f "$FILE" ]; then
+              echo "File $FILE no longer exists, skipping"
+              continue
+            fi
+            
+            echo "Generating documentation for $FILE"
+            
+            # Get file content
+            FILE_CONTENT=$(cat "$FILE")
+            
+            # Create the prompt text
+            PROMPT_TEXT="You are a documentation expert. Generate clear, concise documentation for the following code file.
+
+            File: $FILE
+            
+            ```
+            $FILE_CONTENT
+            ```
+            
+            Generate documentation in markdown format with the following sections:
+            1. Overview - Brief description of what this file does
+            2. Key Functions/Components - List and describe the main functions or components
+            3. Dependencies - Note any important external dependencies
+            4. Usage Examples - Provide 1-2 simple examples of how to use this code
+            
+            Keep your response focused and technical. Use proper markdown formatting."
+            
+            # Create JSON payload for Ollama
+            JSON_PAYLOAD="{\"model\": \"qwq:latest\", \"prompt\": $(echo "$PROMPT_TEXT" | jq -Rs .), \"stream\": false}"
+            
+            # Call Ollama API to generate documentation
+            DOC_RESULT=$(curl -s -H "Content-Type: application/json" \
+              -d "$JSON_PAYLOAD" \
+              http://localhost:11434/api/generate | jq -r '.response' | \
+              # Filter out <think> tags and their content
+              sed -E 's/<think>.*<\/think>//g')
+            
+            # Create a markdown file for the documentation
+            DOC_FILE="docs/auto-generated/$(basename "$FILE" | sed 's/\.[^.]*$//').md"
+            
+            echo "# Documentation for \`$FILE\`" > "$DOC_FILE"
+            echo "" >> "$DOC_FILE"
+            echo "*Automatically generated on $(date '+%Y-%m-%d')*" >> "$DOC_FILE"
+            echo "" >> "$DOC_FILE"
+            echo "$DOC_RESULT" >> "$DOC_FILE"
+          done
+          
+          echo "Documentation generated in docs/auto-generated/"
+
+      - name: Commit documentation
+        run: |
+          # Check if there are any changes to commit
+          if git diff --quiet docs/auto-generated/; then
+            echo "No documentation changes to commit"
+            exit 0
+          fi
+          
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add docs/auto-generated/
+          git commit -m "Auto-generate documentation for recent changes"
+          git push 

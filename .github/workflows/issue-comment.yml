@@ -37,12 +37,14 @@ jobs:
           Don't include any other text in your response."
           
           # Create JSON payload for Ollama
-          JSON_PAYLOAD="{\"model\": \"llama3.2:latest\", \"prompt\": $(echo "$PROMPT_TEXT" | jq -Rs .), \"stream\": false}"
+          JSON_PAYLOAD="{\"model\": \"qwq:latest\", \"prompt\": $(echo "$PROMPT_TEXT" | jq -Rs .), \"stream\": false}"
           
           # Call Ollama API to analyze for duplicates
           DUPLICATE_RESULT=$(curl -s -H "Content-Type: application/json" \
             -d "$JSON_PAYLOAD" \
-            http://localhost:11434/api/generate | jq -r '.response' | tr -d '[:space:]')
+            http://localhost:11434/api/generate | jq -r '.response' | \
+            # Filter out <think> tags and their content
+            sed -E 's/<think>.*<\/think>//g' | tr -d '[:space:]')
           
           # Save the duplicate check result
           echo "result=${DUPLICATE_RESULT}" >> $GITHUB_OUTPUT
@@ -111,12 +113,14 @@ jobs:
           Issue Description: $ISSUE_BODY"
           
           # Create JSON payload for Ollama
-          MODERATION_PAYLOAD="{\"model\": \"llama3.2:latest\", \"prompt\": $(echo "$MODERATION_TEXT" | jq -Rs .), \"stream\": false}"
+          MODERATION_PAYLOAD="{\"model\": \"qwq:latest\", \"prompt\": $(echo "$MODERATION_TEXT" | jq -Rs .), \"stream\": false}"
           
           # Call Ollama API to analyze relevance
           MODERATION_RESULT=$(curl -s -H "Content-Type: application/json" \
             -d "$MODERATION_PAYLOAD" \
-            http://localhost:11434/api/generate | jq -r '.response' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+            http://localhost:11434/api/generate | jq -r '.response' | \
+            # Filter out <think> tags and their content
+            sed -E 's/<think>.*<\/think>//g' | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
           
           # Save the moderation result
           echo "result=${MODERATION_RESULT}" >> $GITHUB_OUTPUT
@@ -140,12 +144,14 @@ jobs:
           fi
           
           # Create JSON payload for Ollama
-          RESPONSE_PAYLOAD="{\"model\": \"llama3.2:latest\", \"prompt\": $(echo "$RESPONSE_TEXT" | jq -Rs .), \"stream\": false}"
+          RESPONSE_PAYLOAD="{\"model\": \"qwq:latest\", \"prompt\": $(echo "$RESPONSE_TEXT" | jq -Rs .), \"stream\": false}"
           
           # Call Ollama API to generate a response
           RESPONSE=$(curl -s -H "Content-Type: application/json" \
             -d "$RESPONSE_PAYLOAD" \
-            http://localhost:11434/api/generate | jq -r '.response')
+            http://localhost:11434/api/generate | jq -r '.response' | \
+            # Filter out <think> tags and their content
+            sed -E 's/<think>.*<\/think>//g')
           
           # Save the response to an output variable, escaping newlines for GitHub Actions
           echo "response<<EOF" >> $GITHUB_OUTPUT

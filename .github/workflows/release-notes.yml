@@ -1,0 +1,113 @@
+name: Release Notes Generator
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  generate-release-notes:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Get tag info
+        id: tag
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          echo "name=$TAG_NAME" >> $GITHUB_OUTPUT
+          
+          # Get the previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 $TAG_NAME^ 2>/dev/null || echo "")
+          echo "previous=$PREV_TAG" >> $GITHUB_OUTPUT
+
+      - name: Get commit history
+        id: commits
+        run: |
+          PREV_TAG="${{ steps.tag.outputs.previous }}"
+          TAG_NAME="${{ steps.tag.outputs.name }}"
+          
+          if [ -z "$PREV_TAG" ]; then
+            # If no previous tag, get all commits up to this tag
+            COMMIT_LIST=$(git log --pretty=format:"%h %s" $TAG_NAME)
+          else
+            # Get commits between previous tag and this tag
+            COMMIT_LIST=$(git log --pretty=format:"%h %s" $PREV_TAG..$TAG_NAME)
+          fi
+          
+          # Save the commit list to an output variable
+          echo "list<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMIT_LIST" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          TAG_NAME="${{ steps.tag.outputs.name }}"
+          PREV_TAG="${{ steps.tag.outputs.previous }}"
+          COMMIT_LIST="${{ steps.commits.outputs.list }}"
+          
+          # Get the diff stats
+          if [ -z "$PREV_TAG" ]; then
+            DIFF_STATS=$(git diff --stat $(git rev-list --max-parents=0 HEAD) $TAG_NAME)
+          else
+            DIFF_STATS=$(git diff --stat $PREV_TAG $TAG_NAME)
+          fi
+          
+          # Create the prompt text
+          PROMPT_TEXT="You are a release notes generator. Create comprehensive, well-structured release notes for the following version.
+
+          Version: $TAG_NAME
+          Previous Version: ${PREV_TAG:-'(Initial Release)'}
+          
+          Commit History:
+          $COMMIT_LIST
+          
+          Diff Stats:
+          $DIFF_STATS
+          
+          Generate release notes with the following sections:
+          1. Summary - A brief overview of this release
+          2. New Features - List of new features added
+          3. Bug Fixes - List of bugs fixed
+          4. Improvements - List of improvements or enhancements
+          5. Breaking Changes (if any) - List of breaking changes
+          
+          Format the release notes in markdown. Be concise but informative. Group related changes together. If a section has no relevant changes, you can omit it."
+          
+          # Create JSON payload for Ollama
+          JSON_PAYLOAD="{\"model\": \"qwq:latest\", \"prompt\": $(echo "$PROMPT_TEXT" | jq -Rs .), \"stream\": false}"
+          
+          # Call Ollama API to generate release notes
+          RELEASE_NOTES=$(curl -s -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD" \
+            http://localhost:11434/api/generate | jq -r '.response' | \
+            # Filter out <think> tags and their content
+            sed -E 's/<think>.*<\/think>//g')
+          
+          # Save the release notes to an output variable
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$RELEASE_NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tagName = '${{ steps.tag.outputs.name }}';
+            const releaseNotes = `${{ steps.release-notes.outputs.notes }}`;
+            
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tagName,
+              name: tagName,
+              body: releaseNotes,
+              draft: false,
+              prerelease: tagName.includes('-beta') || tagName.includes('-alpha') || tagName.includes('-rc')
+            }); 
