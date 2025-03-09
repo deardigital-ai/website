@@ -28,8 +28,10 @@ jobs:
           TOPIC=$(curl -s -H "Content-Type: application/json" \
             -d "$TOPIC_PAYLOAD" \
             http://localhost:11434/api/generate | jq -r '.response' | \
-            # Filter out <think> tags and their content
-            sed -E 's/<think>.*<\/think>//g' | tr -d '\n')
+            # Filter out <think> tags and their content more thoroughly
+            perl -pe 's/<think>.*?<\/think>//gs' | tr -d '\n' | xargs)
+          
+          echo "Generated raw topic: $TOPIC"
           
           # Create the prompt for generating discussion body
           BODY_PROMPT="You are a helpful AI assistant for a GitHub repository. Generate an engaging and informative discussion post about the following topic:
@@ -51,8 +53,8 @@ jobs:
           BODY=$(curl -s -H "Content-Type: application/json" \
             -d "$BODY_PAYLOAD" \
             http://localhost:11434/api/generate | jq -r '.response' | \
-            # Filter out <think> tags and their content
-            sed -E 's/<think>.*<\/think>//g')
+            # Filter out <think> tags and their content more thoroughly
+            perl -pe 's/<think>.*?<\/think>//gs')
           
           # Save the topic and body to output variables, escaping newlines for GitHub Actions
           echo "topic<<EOF" >> $GITHUB_OUTPUT
@@ -67,6 +69,45 @@ jobs:
           UNIQUE_ID=$(echo "$TOPIC $TIMESTAMP" | md5sum | cut -d' ' -f1)
           echo "unique_id=$UNIQUE_ID" >> $GITHUB_OUTPUT
 
+      - name: Get Repository Node ID
+        id: repo_info
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            
+            // Query the repository node ID using GraphQL
+            const result = await github.graphql(`
+              query {
+                repository(owner: "${owner}", name: "${repo}") {
+                  id
+                  discussionCategories(first: 1) {
+                    nodes {
+                      id
+                      name
+                    }
+                  }
+                }
+              }
+            `);
+            
+            console.log(`Repository Node ID: ${result.repository.id}`);
+            
+            // Get the first discussion category ID if available
+            let categoryId = 'DIC_kwDOLYQwhs4CZvYA'; // Default fallback
+            if (result.repository.discussionCategories.nodes.length > 0) {
+              categoryId = result.repository.discussionCategories.nodes[0].id;
+              console.log(`Using discussion category: ${result.repository.discussionCategories.nodes[0].name} (${categoryId})`);
+            } else {
+              console.log(`No discussion categories found, using default ID: ${categoryId}`);
+            }
+            
+            return {
+              repoId: result.repository.id,
+              categoryId: categoryId
+            };
+
       - name: Create GitHub Discussion
         uses: actions/github-script@v6
         with:
@@ -75,23 +116,21 @@ jobs:
             const topic = `${{ steps.generate_content.outputs.topic }}`;
             const body = `${{ steps.generate_content.outputs.body }}`;
             const uniqueId = '${{ steps.generate_content.outputs.unique_id }}';
+            const repoInfo = ${{ steps.repo_info.outputs.result }};
             
             // Log the generated content
             console.log(`Creating discussion with topic: ${topic}`);
             console.log(`Unique ID: ${uniqueId}`);
+            console.log(`Repository ID: ${repoInfo.repoId}`);
+            console.log(`Category ID: ${repoInfo.categoryId}`);
             
             try {
-              // Determine which category ID to use for the discussion
-              // You'll need to get the category ID from your repository's discussions
-              // This is an example - you should replace with your actual category ID
-              const categoryId = 'DIC_kwDOLYQwhs4CZvYA';  // Replace with your actual category ID
-              
               // Create the discussion using GraphQL API
               const response = await github.graphql(`
                 mutation {
                   createDiscussion(input: {
-                    repositoryId: "${{ github.repository_id }}",
-                    categoryId: "${categoryId}",
+                    repositoryId: "${repoInfo.repoId}",
+                    categoryId: "${repoInfo.categoryId}",
                     body: ${JSON.stringify(body)},
                     title: ${JSON.stringify(topic)}
                   }) {
