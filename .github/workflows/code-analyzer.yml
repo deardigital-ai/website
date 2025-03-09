@@ -15,62 +15,57 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get recent changes
-        id: recent-changes
+      - name: Get codebase files
+        id: codebase-files
         run: |
-          # Get changes in the last 24 hours or since the last run
-          LAST_RUN_FILE=".last_code_analysis_run"
-          
-          if [ -f "$LAST_RUN_FILE" ]; then
-            LAST_RUN=$(cat "$LAST_RUN_FILE")
-            CHANGED_FILES=$(git diff --name-only $LAST_RUN HEAD)
-          else
-            # If no last run, check changes in the last 24 hours
-            CHANGED_FILES=$(git diff --name-only "@{24.hours.ago}" HEAD)
-          fi
-          
-          # Save current commit hash for next run
-          git rev-parse HEAD > "$LAST_RUN_FILE"
-          
-          # Filter for code files only
-          CODE_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(js|jsx|ts|tsx|py|go|java|rb|php|c|cpp|h|hpp|cs)$' || echo "")
+          # Get all code files in the repository
+          CODE_FILES=$(find . -type f -name "*.js" -o -name "*.jsx" -o -name "*.ts" -o -name "*.tsx" -o -name "*.py" -o -name "*.go" -o -name "*.java" -o -name "*.rb" -o -name "*.php" -o -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cs" | sort)
           
           if [ -z "$CODE_FILES" ]; then
-            echo "No relevant code files changed recently."
-            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No code files found in the repository."
+            echo "has_files=false" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          echo "has_changes=true" >> $GITHUB_OUTPUT
+          # Save the last analyzed commit for tracking purposes only
+          git rev-parse HEAD > ".last_code_analysis_run"
+          
+          # Randomly select up to 5 files to analyze in this run
+          # This prevents analyzing the entire codebase every 5 minutes
+          SELECTED_FILES=$(echo "$CODE_FILES" | shuf -n 5)
+          
+          echo "has_files=true" >> $GITHUB_OUTPUT
           
           # Save the list to an output variable
           echo "files<<EOF" >> $GITHUB_OUTPUT
-          echo "$CODE_FILES" >> $GITHUB_OUTPUT
+          echo "$SELECTED_FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Analyze codebase
         id: code-analysis
-        if: steps.recent-changes.outputs.has_changes == 'true'
+        if: steps.codebase-files.outputs.has_files == 'true'
         run: |
-          # Get the list of changed files
-          CHANGED_FILES="${{ steps.recent-changes.outputs.files }}"
+          # Get the list of files to analyze
+          SELECTED_FILES="${{ steps.codebase-files.outputs.files }}"
           
           # Get repository structure for context
           REPO_STRUCTURE=$(find . -type f -name "*.js" -o -name "*.jsx" -o -name "*.ts" -o -name "*.tsx" -o -name "*.py" -o -name "*.go" -o -name "*.java" -o -name "*.rb" -o -name "*.php" -o -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cs" | sort)
           
           # Create the prompt text
-          PROMPT_TEXT="You are an expert code analyzer. Analyze the following repository structure and recently changed files to identify potential features, bugs, and improvements.
+          PROMPT_TEXT="You are an expert code analyzer. Analyze the following repository structure and selected files to identify potential features, bugs, and improvements.
 
           Repository Structure (partial):
           $REPO_STRUCTURE
 
-          Recently Changed Files:
-          $CHANGED_FILES
+          Selected Files for Analysis:
+          $SELECTED_FILES
 
-          For each changed file, I will provide the content. Based on your analysis, suggest:
+          For each file, I will provide the content. Based on your analysis, suggest:
           1. New features that could enhance the codebase
           2. Potential bugs or issues that need fixing
           3. Code improvements for better performance, readability, or maintainability
+
+          You have complete freedom to suggest any improvements you think would be valuable, regardless of when the files were last changed.
 
           Format your response as a JSON array with the following structure:
           [
@@ -90,7 +85,7 @@ jobs:
           SUGGESTIONS="[]"
           
           # Process each file
-          for FILE in $CHANGED_FILES; do
+          for FILE in $SELECTED_FILES; do
             if [ ! -f "$FILE" ]; then
               echo "File $FILE no longer exists, skipping"
               continue
@@ -108,7 +103,7 @@ jobs:
             $FILE_CONTENT
             ```
 
-            Based on this file and the repository context, suggest potential features, bugs, or improvements."
+            Based on this file and the repository context, suggest potential features, bugs, or improvements. Be creative and thorough in your analysis."
             
             # Create JSON payload for Ollama
             JSON_PAYLOAD="{\"model\": \"qwq:latest\", \"prompt\": $(echo "$PROMPT_TEXT\n\n$FILE_PROMPT" | jq -Rs .), \"stream\": false}"
@@ -148,7 +143,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub issues
-        if: steps.recent-changes.outputs.has_changes == 'true'
+        if: steps.codebase-files.outputs.has_files == 'true'
         uses: actions/github-script@v6
         env:
           SUGGESTIONS: ${{ steps.code-analysis.outputs.suggestions }}

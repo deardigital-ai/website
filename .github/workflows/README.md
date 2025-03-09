@@ -21,7 +21,7 @@ Some workflows, particularly the `code-analyzer.yml` workflow, require a GitHub 
    - Go to your repository settings
    - Navigate to "Secrets and variables" > "Actions"
    - Click "New repository secret"
-   - Name: `GITHUB_TOKEN` (or `PAT` if you prefer)
+   - Name: `PAT`
    - Value: Paste the token you copied
    - Click "Add secret"
 
@@ -29,13 +29,14 @@ Some workflows, particularly the `code-analyzer.yml` workflow, require a GitHub 
 
 ### Code Analysis and Issue Creation (`code-analyzer.yml`)
 
-This workflow runs every 5 minutes to analyze code changes and automatically create GitHub issues for suggested features, bugs, and improvements.
+This workflow runs every 5 minutes to analyze code files and automatically create GitHub issues for suggested features, bugs, and improvements.
 
 - **Trigger**: Runs on a schedule (every 5 minutes) or can be manually triggered
 - **Requirements**: Requires a GitHub token with issue creation permissions
 - **Features**:
-  - Analyzes recent code changes
+  - Randomly selects files from the entire codebase for analysis in each run
   - Uses a local LLM (qwq model) to identify potential features, bugs, and improvements
+  - Has complete freedom to suggest any improvements, regardless of when files were last changed
   - Creates properly formatted GitHub issues with appropriate labels
   - Avoids creating duplicate issues
 
