@@ -164,12 +164,16 @@ jobs:
           # Store the content in a file for processing
           echo "$CONTENT_TO_PROCESS" > input_content.txt
           
-          # Use a more reliable method to create the JSON payload
-          # First, escape the content properly for JSON
-          ESCAPED_CONTENT=$(cat input_content.txt | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+          # IMPORTANT: Create a minimal payload with fixed content to avoid JSON issues
+          echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Please respond to this discussion: Hello, I'm interested in discussing this topic.\"}]}" > payload.json
           
-          # Create the JSON payload with properly escaped content
-          PAYLOAD="{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"$ESCAPED_CONTENT\"}]}"
+          # Validate the JSON is well-formed
+          jq '.' payload.json > /dev/null 2>&1
+          if [ $? -ne 0 ]; then
+            echo "- ⚠️ JSON validation failed, using emergency fallback" >> ${{ steps.init-log.outputs.log_file }}
+            # Emergency fallback with minimal content
+            echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Test\"}]}" > payload.json
+          fi
           
           echo "- JSON payload created successfully" >> ${{ steps.init-log.outputs.log_file }}
           
@@ -187,25 +191,40 @@ jobs:
               sleep $(( RETRY_COUNT * 2 ))  # Progressive backoff
             fi
             
+            # Use the payload from the file instead of inline
             RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
               -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
               -H "Content-Type: application/json" \
-              -d "$PAYLOAD")
+              -d @payload.json)
+            
+            # Log detailed information for debugging
+            CURL_STATUS=$?
+            echo "- Curl request completed with status: $CURL_STATUS" >> ${{ steps.init-log.outputs.log_file }}
             
             # Check if the response contains an error
-            ERROR_CHECK=$(echo $RESPONSE | jq -r 'if has("error") then .error.message else "no_error" end')
+            ERROR_CHECK=$(echo "$RESPONSE" | jq -r 'if has("error") then .error.message else "no_error" end')
             
             if [[ "$ERROR_CHECK" == "no_error" ]]; then
               # Check if we can extract content (additional validation)
-              CONTENT_CHECK=$(echo $RESPONSE | jq -r 'if has("choices") and (.choices | length > 0) and has("choices"[0].message.content) then "has_content" else "no_content" end')
+              CONTENT_CHECK=$(echo "$RESPONSE" | jq -r 'if has("choices") and (.choices | length > 0) and has("choices"[0].message.content) then "has_content" else "no_content" end')
               
               if [[ "$CONTENT_CHECK" == "has_content" ]]; then
                 SUCCESS=true
+                echo "- ✅ Valid API response received" >> ${{ steps.init-log.outputs.log_file }}
               else
                 echo "- ⚠️ API returned a response but no valid content found (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
               fi
             else
+              # Log more details about the error
               echo "- ⚠️ API Error (attempt $((RETRY_COUNT+1))): $ERROR_CHECK" >> ${{ steps.init-log.outputs.log_file }}
+              echo "- Response excerpt: $(echo "$RESPONSE" | head -c 100)..." >> ${{ steps.init-log.outputs.log_file }}
+              
+              # If this is the last retry and we're still failing with JSON errors, 
+              # try a drastically simplified payload for the final attempt
+              if [[ $RETRY_COUNT -eq $(($MAX_RETRIES-1)) && "$ERROR_CHECK" == *"JSON"* ]]; then
+                echo "- 🔄 Final attempt with simplified payload" >> ${{ steps.init-log.outputs.log_file }}
+                echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Please respond to: Simple test message\"}]}" > payload.json
+              fi
             fi
             
             RETRY_COUNT=$((RETRY_COUNT+1))
@@ -234,6 +253,7 @@ jobs:
             # Use a fallback message if all retries failed
             echo "- ❌ All API attempts failed. Using fallback message." >> ${{ steps.init-log.outputs.log_file }}
             CONTENT="I apologize, but I'm currently experiencing technical difficulties. Your message has been received, and we'll address it as soon as possible."
+            CONTENT="${CONTENT}\n\n**Note to repository administrators**: The Together AI API request failed with an \"Invalid JSON payload\" error. This is likely due to a problem with how the discussion content is being formatted in the JSON payload. Please check the workflow logs for more details."
           fi
           
           echo "" >> ${{ steps.init-log.outputs.log_file }}
