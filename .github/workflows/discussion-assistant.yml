@@ -11,6 +11,24 @@ jobs:
     runs-on: self-hosted
     
     steps:
+      - name: Initialize workflow log
+        id: init-log
+        run: |
+          # Create a log file with initial details
+          echo "# Workflow Execution Log - $(date)" > workflow_debug.log
+          echo "## Run ID: ${{ github.run_id }}" >> workflow_debug.log
+          echo "## Event: ${{ github.event_name }}" >> workflow_debug.log
+          echo "## Repository: ${{ github.repository }}" >> workflow_debug.log
+          echo "## Workflow: ${{ github.workflow }}" >> workflow_debug.log
+          echo "## Run Number: ${{ github.run_number }}" >> workflow_debug.log
+          echo "## Actor: ${{ github.actor }}" >> workflow_debug.log
+          echo "## Start Time: $(date)" >> workflow_debug.log
+          echo "" >> workflow_debug.log
+          echo "## Step Logs:" >> workflow_debug.log
+          
+          # Make the log file available to all steps
+          echo "log_file=workflow_debug.log" >> $GITHUB_OUTPUT
+      
       - name: Checkout repository
         uses: actions/checkout@v3
         
@@ -18,6 +36,13 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: '16'
+      
+      - name: Log setup steps
+        run: |
+          echo "### Setup steps completed at $(date)" >> ${{ steps.init-log.outputs.log_file }}
+          echo "- Repository checkout: ✅" >> ${{ steps.init-log.outputs.log_file }}
+          echo "- Node.js setup: ✅" >> ${{ steps.init-log.outputs.log_file }}
+          echo "" >> ${{ steps.init-log.outputs.log_file }}
           
       - name: Get discussion content
         id: get-content
@@ -34,12 +59,31 @@ jobs:
               const discussion = context.payload.discussion;
               discussionContent = discussion.title + '\n\n' + discussion.body;
               discussionId = discussion.node_id;
+              
+              // Log discussion details
+              const fs = require('fs');
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                `### Retrieved Discussion at ${new Date().toISOString()}\n` +
+                `- Title: ${discussion.title}\n` +
+                `- Discussion ID: ${discussionId}\n` +
+                `- Content length: ${discussionContent.length} characters\n\n`
+              );
             } else if (eventName === 'discussion_comment') {
               const comment = context.payload.comment;
               const discussion = context.payload.discussion;
               discussionContent = discussion.title + '\n\n' + comment.body;
               discussionId = discussion.node_id;
               commentId = comment.node_id;
+              
+              // Log comment details
+              const fs = require('fs');
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                `### Retrieved Discussion Comment at ${new Date().toISOString()}\n` +
+                `- Discussion Title: ${discussion.title}\n` +
+                `- Discussion ID: ${discussionId}\n` +
+                `- Comment ID: ${commentId}\n` +
+                `- Content length: ${discussionContent.length} characters\n\n`
+              );
             }
             
             // Get all previous comments to provide context
@@ -70,15 +114,29 @@ jobs:
                 discussionNumber: context.payload.discussion.number
               };
               
-              const result = await github.graphql(query, variables);
-              const comments = result.repository.discussion.comments.nodes;
-              
-              // Append all previous comments to provide context
-              if (comments.length > 0) {
-                allContent += '\n\nPrevious comments:\n';
-                for (const comment of comments) {
-                  allContent += `\n@${comment.author.login} said: ${comment.body}\n`;
+              try {
+                const result = await github.graphql(query, variables);
+                const comments = result.repository.discussion.comments.nodes;
+                
+                // Log fetched comments
+                const fs = require('fs');
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                  `- Retrieved ${comments.length} previous comments\n\n`
+                );
+                
+                // Append all previous comments to provide context
+                if (comments.length > 0) {
+                  allContent += '\n\nPrevious comments:\n';
+                  for (const comment of comments) {
+                    allContent += `\n@${comment.author.login} said: ${comment.body}\n`;
+                  }
                 }
+              } catch (error) {
+                // Log error
+                const fs = require('fs');
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                  `- ❌ Error retrieving previous comments: ${error.message}\n\n`
+                );
               }
             }
             
@@ -89,6 +147,13 @@ jobs:
       - name: Call Together AI API
         id: ai-response
         run: |
+          echo "### Calling Together AI API at $(date)" >> ${{ steps.init-log.outputs.log_file }}
+          echo "- Model: deepseek-ai/DeepSeek-R1" >> ${{ steps.init-log.outputs.log_file }}
+          echo "- Input content length: $(echo "${{ steps.get-content.outputs.discussion_content }}" | wc -c) bytes" >> ${{ steps.init-log.outputs.log_file }}
+          
+          # Start timer
+          START_TIME=$(date +%s)
+          
           RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
             -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
             -H "Content-Type: application/json" \
@@ -97,8 +162,24 @@ jobs:
               "messages": [{"role": "user", "content": "${{ steps.get-content.outputs.discussion_content }}"}]
             }')
           
+          # End timer
+          END_TIME=$(date +%s)
+          ELAPSED_TIME=$((END_TIME - START_TIME))
+          
           # Extract the content from the response
           CONTENT=$(echo $RESPONSE | jq -r '.choices[0].message.content')
+          
+          # Log API response details
+          echo "- API response received in ${ELAPSED_TIME} seconds" >> ${{ steps.init-log.outputs.log_file }}
+          echo "- Response length: $(echo "$CONTENT" | wc -c) bytes" >> ${{ steps.init-log.outputs.log_file }}
+          
+          # Check if the response contains an error
+          if [[ $(echo $RESPONSE | jq -r 'has("error")') == "true" ]]; then
+            ERROR=$(echo $RESPONSE | jq -r '.error.message')
+            echo "- ❌ API Error: $ERROR" >> ${{ steps.init-log.outputs.log_file }}
+          fi
+          
+          echo "" >> ${{ steps.init-log.outputs.log_file }}
           
           # Save the content to a file to preserve newlines and formatting
           echo "$CONTENT" > response.txt
@@ -109,6 +190,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
       
       - name: Post response to discussion
+        id: post-response
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -118,36 +200,62 @@ jobs:
             const commentId = '${{ steps.get-content.outputs.comment_id }}';
             const aiResponse = `${{ steps.ai-response.outputs.content }}`;
             
-            // Add a comment with the AI response
-            if (eventName === 'discussion') {
-              // Add a new comment to the discussion
-              await github.graphql(`
-                mutation($discussionId: ID!, $body: String!) {
-                  addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
-                    comment {
-                      id
+            const fs = require('fs');
+            fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+              `### Posting AI Response at ${new Date().toISOString()}\n` +
+              `- Event type: ${eventName}\n` +
+              `- Discussion ID: ${discussionId}\n` +
+              (commentId ? `- Comment ID: ${commentId}\n` : '') +
+              `- Response length: ${aiResponse.length} characters\n\n`
+            );
+            
+            try {
+              // Add a comment with the AI response
+              if (eventName === 'discussion') {
+                // Add a new comment to the discussion
+                const result = await github.graphql(`
+                  mutation($discussionId: ID!, $body: String!) {
+                    addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+                      comment {
+                        id
+                      }
                     }
                   }
-                }
-              `, {
-                discussionId: discussionId,
-                body: aiResponse
-              });
-            } else if (eventName === 'discussion_comment') {
-              // Reply to the comment
-              await github.graphql(`
-                mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
-                  addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
-                    comment {
-                      id
+                `, {
+                  discussionId: discussionId,
+                  body: aiResponse
+                });
+                
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                  `- ✅ Successfully posted comment to discussion\n` +
+                  `- Comment ID: ${result.addDiscussionComment.comment.id}\n\n`
+                );
+              } else if (eventName === 'discussion_comment') {
+                // Reply to the comment
+                const result = await github.graphql(`
+                  mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
+                    addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
+                      comment {
+                        id
+                      }
                     }
                   }
-                }
-              `, {
-                discussionId: discussionId,
-                body: aiResponse,
-                replyToId: commentId
-              });
+                `, {
+                  discussionId: discussionId,
+                  body: aiResponse,
+                  replyToId: commentId
+                });
+                
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                  `- ✅ Successfully posted reply to comment\n` +
+                  `- Reply ID: ${result.addDiscussionComment.comment.id}\n\n`
+                );
+              }
+            } catch (error) {
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                `- ❌ Error posting response: ${error.message}\n\n`
+              );
+              core.setFailed(`Error posting response: ${error.message}`);
             }
       
       - name: Get workflow run logs for analysis
@@ -160,20 +268,32 @@ jobs:
             const { owner, repo } = context.repo;
             const workflowName = 'Discussion Assistant';
             
+            const fs = require('fs');
+            fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+              `### Attempting to Get Workflow Logs at ${new Date().toISOString()}\n`
+            );
+            
             try {
               // Get workflow ID by name
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Fetching workflows for repo\n`);
               const { data: workflows } = await github.rest.actions.listRepoWorkflows({
                 owner,
                 repo
               });
               
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Found ${workflows.workflows.length} workflows\n`);
+              
               const workflow = workflows.workflows.find(w => w.name === workflowName);
               if (!workflow) {
                 core.warning(`Could not find workflow with name: ${workflowName}`);
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- ❌ Could not find workflow with name: ${workflowName}\n\n`);
                 return 'no_workflow_found';
               }
               
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Found workflow ID: ${workflow.id}\n`);
+              
               // Get workflow runs
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Fetching workflow runs\n`);
               const { data: runs } = await github.rest.actions.listWorkflowRuns({
                 owner,
                 repo,
@@ -181,37 +301,51 @@ jobs:
                 per_page: 5  // Get the most recent runs
               });
               
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Found ${runs.workflow_runs ? runs.workflow_runs.length : 0} workflow runs\n`);
+              
               if (!runs.workflow_runs || runs.workflow_runs.length <= 1) {
                 core.warning('Not enough workflow runs found for analysis');
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- ❌ Not enough workflow runs found for analysis\n\n`);
                 return 'no_runs_found';
               }
               
               // Get second latest workflow run (to avoid getting the currently running workflow)
               const previousRun = runs.workflow_runs[1];
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Using run ID: ${previousRun.id} (${previousRun.created_at})\n`);
               
               try {
                 // Try to get logs URL
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Attempting to download workflow logs\n`);
                 const { data: logsUrl } = await github.rest.actions.downloadWorkflowRunLogs({
                   owner,
                   repo,
                   run_id: previousRun.id
                 });
                 
-                // Download logs using curl
-                const fs = require('fs');
-                const { execSync } = require('child_process');
-                
                 // The API returns a URL directly instead of an object with a url property
                 const logsDownloadUrl = typeof logsUrl === 'string' ? logsUrl : logsUrl.url;
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Logs URL obtained: ${logsDownloadUrl ? 'Yes' : 'No'}\n`);
+                
+                if (!logsDownloadUrl) {
+                  throw new Error('No logs URL available');
+                }
+                
+                // Download logs using curl
+                const { execSync } = require('child_process');
+                
+                // Download the logs (which is a zip file)
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Downloading logs\n`);
                 execSync(`curl -L "${logsDownloadUrl}" -o logs.zip`);
                 
                 // Create directory for logs
                 execSync('mkdir -p workflow_logs');
                 
                 // Extract the logs
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Extracting logs\n`);
                 execSync('unzip -o logs.zip -d workflow_logs');
                 
                 // Combine all log files into a single file for analysis
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Combining log files\n`);
                 execSync('cat workflow_logs/*.txt > combined_logs.txt');
                 const logContent = fs.readFileSync('combined_logs.txt', 'utf8');
                 
@@ -225,14 +359,13 @@ jobs:
                 core.setOutput('result', 'success');
                 core.setOutput('has_logs', 'true');
                 
-                console.log('Logs and workflow file prepared successfully');
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- ✅ Logs and workflow file prepared successfully\n\n`);
                 return 'success';
               } catch (logsError) {
                 // If we can't get logs, we'll just analyze the workflow file without logs
-                console.log(`Error getting logs: ${logsError.message}`);
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- ❌ Error getting logs: ${logsError.message}\n`);
                 
                 // Read the workflow file
-                const fs = require('fs');
                 const workflowContent = fs.readFileSync('.github/workflows/discussion-assistant.yml', 'utf8');
                 
                 // Store the content for the next step
@@ -242,10 +375,11 @@ jobs:
                 core.setOutput('result', 'success');
                 core.setOutput('has_logs', 'false');
                 
-                console.log('Only workflow file prepared (no logs available)');
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- ⚠️ Only workflow file prepared (no logs available)\n\n`);
                 return 'success_without_logs';
               }
             } catch (error) {
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- ❌ Error in workflow analysis preparation: ${error.message}\n\n`);
               core.warning(`Error in workflow analysis preparation: ${error.message}`);
               return 'error';
             }
@@ -254,14 +388,20 @@ jobs:
         id: analyze-logs
         if: success() && steps.get-logs.outputs.result != ''
         run: |
+          echo "### Starting Workflow Analysis at $(date)" >> ${{ steps.init-log.outputs.log_file }}
+          
           # Check if the workflow_file.yml exists before proceeding
           if [ ! -f "workflow_file.yml" ]; then
             echo "::warning::workflow_file.yml not found. Skipping analysis."
+            echo "- ❌ workflow_file.yml not found. Skipping analysis." >> ${{ steps.init-log.outputs.log_file }}
             exit 0
           fi
           
+          echo "- Workflow file found" >> ${{ steps.init-log.outputs.log_file }}
+          
           # Create the analysis prompt based on available data
           if [ "${{ steps.get-logs.outputs.has_logs }}" = "true" ] && [ -f "combined_logs.txt" ]; then
+            echo "- Using workflow file and logs for analysis" >> ${{ steps.init-log.outputs.log_file }}
             # Get workflow content and logs for analysis
             WORKFLOW_CONTENT=$(cat workflow_file.yml)
             LOG_CONTENT=$(cat combined_logs.txt)
@@ -295,6 +435,7 @@ jobs:
             
             Format your response as a structured GitHub issue that could be created to track these improvements."
           else
+            echo "- Using only workflow file for analysis (no logs available)" >> ${{ steps.init-log.outputs.log_file }}
             # Only analyze the workflow file without logs
             WORKFLOW_CONTENT=$(cat workflow_file.yml)
             
@@ -322,6 +463,11 @@ jobs:
             Format your response as a structured GitHub issue that could be created to track these improvements."
           fi
           
+          # Start timer
+          START_TIME=$(date +%s)
+          
+          echo "- Sending analysis request to Together AI API" >> ${{ steps.init-log.outputs.log_file }}
+          
           # Call Together AI API for analysis
           RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
             -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
@@ -331,14 +477,27 @@ jobs:
               \"messages\": [{\"role\": \"user\", \"content\": \"$ANALYSIS_PROMPT\"}]
             }")
           
+          # End timer
+          END_TIME=$(date +%s)
+          ELAPSED_TIME=$((END_TIME - START_TIME))
+          
+          echo "- Analysis response received in ${ELAPSED_TIME} seconds" >> ${{ steps.init-log.outputs.log_file }}
+          
           # Extract the content from the response
           ANALYSIS=$(echo $RESPONSE | jq -r '.choices[0].message.content')
+          
+          # Check if the response contains an error
+          if [[ $(echo $RESPONSE | jq -r 'has("error")') == "true" ]]; then
+            ERROR=$(echo $RESPONSE | jq -r '.error.message')
+            echo "- ❌ API Error during analysis: $ERROR" >> ${{ steps.init-log.outputs.log_file }}
+          fi
           
           # Save the analysis to a file
           echo "$ANALYSIS" > workflow_analysis.txt
           
           # Check if the analysis contains suggestions (simple heuristic)
           if grep -q -i "improvement\|issue\|suggestion\|recommend\|fix\|enhance" workflow_analysis.txt; then
+            echo "- ✅ Analysis found suggestions for improvement" >> ${{ steps.init-log.outputs.log_file }}
             echo "has_suggestions=true" >> $GITHUB_OUTPUT
             
             # Format for GitHub output
@@ -346,10 +505,14 @@ jobs:
             cat workflow_analysis.txt >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
+            echo "- ℹ️ No significant suggestions found in analysis" >> ${{ steps.init-log.outputs.log_file }}
             echo "has_suggestions=false" >> $GITHUB_OUTPUT
           fi
+          
+          echo "" >> ${{ steps.init-log.outputs.log_file }}
       
       - name: Create improvement issue
+        id: create-issue
         if: steps.analyze-logs.outputs.has_suggestions == 'true'
         uses: actions/github-script@v6
         with:
@@ -358,29 +521,121 @@ jobs:
             const { owner, repo } = context.repo;
             const analysis = `${{ steps.analyze-logs.outputs.analysis }}`;
             
-            // Determine a good title from the analysis (take first line or generate one)
-            let title = "Workflow Improvement Suggestions for Discussion Assistant";
-            const firstLine = analysis.split('\n')[0].trim();
-            if (firstLine && firstLine.length > 10 && firstLine.length < 100) {
-              title = firstLine;
+            const fs = require('fs');
+            fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+              `### Creating Improvement Issue at ${new Date().toISOString()}\n`
+            );
+            
+            try {
+              // Determine a good title from the analysis (take first line or generate one)
+              let title = "Workflow Improvement Suggestions for Discussion Assistant";
+              const firstLine = analysis.split('\n')[0].trim();
+              if (firstLine && firstLine.length > 10 && firstLine.length < 100) {
+                title = firstLine;
+              }
+              
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Issue title: "${title}"\n`);
+              
+              // Get repository owner for assignee
+              const { data: repoData } = await github.rest.repos.get({
+                owner,
+                repo
+              });
+              
+              const assignee = repoData.owner.login;
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Assignee: ${assignee}\n`);
+              
+              // Create the issue
+              const { data: issue } = await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body: analysis,
+                labels: ['automation', 'improvement', 'workflow'],
+                assignees: [assignee]
+              });
+              
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                `- ✅ Successfully created issue #${issue.number}\n` +
+                `- Issue URL: ${issue.html_url}\n\n`
+              );
+              
+              return {
+                issue_number: issue.number,
+                issue_url: issue.html_url
+              };
+            } catch (error) {
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                `- ❌ Error creating issue: ${error.message}\n\n`
+              );
+              core.setFailed(`Error creating issue: ${error.message}`);
+              return null;
             }
+      
+      - name: Create workflow log discussion
+        id: create-log-discussion
+        if: always()  # Run even if previous steps failed
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
             
-            // Get repository owner for assignee
-            const { data: repoData } = await github.rest.repos.get({
-              owner,
-              repo
-            });
-            
-            const assignee = repoData.owner.login;
-            
-            // Create the issue
-            await github.rest.issues.create({
-              owner,
-              repo,
-              title,
-              body: analysis,
-              labels: ['automation', 'improvement', 'workflow'],
-              assignees: [assignee]
-            });
-            
-            console.log(`Created improvement issue: ${title}`); 
+            try {
+              const fs = require('fs');
+              
+              // Append final execution stats
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                `\n## Workflow Execution Summary\n` +
+                `- End Time: ${new Date().toISOString()}\n` +
+                `- Run URL: https://github.com/${owner}/${repo}/actions/runs/${{ github.run_id }}\n` +
+                `- Workflow File: https://github.com/${owner}/${repo}/blob/${{ github.ref_name }}/.github/workflows/discussion-assistant.yml\n`
+              );
+              
+              // Read the complete log file
+              const logContent = fs.readFileSync('${{ steps.init-log.outputs.log_file }}', 'utf8');
+              
+              // Create a new discussion with the logs
+              const result = await github.graphql(`
+                mutation($input: CreateDiscussionInput!) {
+                  createDiscussion(input: $input) {
+                    discussion {
+                      id
+                      url
+                    }
+                  }
+                }
+              `, {
+                input: {
+                  repositoryId: context.payload.repository.node_id,
+                  categoryId: context.payload.repository.discussion_category_node_id || "DIC_kwDOLnNa0M4CT3wz", // Use a default if not available
+                  body: logContent,
+                  title: `Analysis of workflow #${{ github.run_number }} - ${new Date().toISOString().split('T')[0]}`
+                }
+              });
+              
+              console.log(`Created log discussion: ${result.createDiscussion.discussion.url}`);
+              return result.createDiscussion.discussion.url;
+            } catch (error) {
+              console.error(`Error creating log discussion: ${error.message}`);
+              
+              // If we can't create a discussion through GraphQL, try to create an issue instead
+              try {
+                const fs = require('fs');
+                const logContent = fs.readFileSync('${{ steps.init-log.outputs.log_file }}', 'utf8');
+                
+                const { data: issue } = await github.rest.issues.create({
+                  owner,
+                  repo,
+                  title: `Analysis of workflow #${{ github.run_number }} - ${new Date().toISOString().split('T')[0]}`,
+                  body: logContent,
+                  labels: ['log', 'automation', 'workflow']
+                });
+                
+                console.log(`Created log issue: ${issue.html_url}`);
+                return issue.html_url;
+              } catch (issueError) {
+                console.error(`Error creating fallback log issue: ${issueError.message}`);
+                return null;
+              }
+            } 
