@@ -164,8 +164,12 @@ jobs:
           # Store the content in a file for processing
           echo "$CONTENT_TO_PROCESS" > input_content.txt
           
-          # Create properly JSON-escaped payload using jq
-          PAYLOAD=$(jq -n --rawfile content input_content.txt '{"model": "deepseek-ai/DeepSeek-R1", "messages": [{"role": "user", "content": $content}]}')
+          # Use a more reliable method to create the JSON payload
+          # First, escape the content properly for JSON
+          ESCAPED_CONTENT=$(cat input_content.txt | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+          
+          # Create the JSON payload with properly escaped content
+          PAYLOAD="{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"$ESCAPED_CONTENT\"}]}"
           
           echo "- JSON payload created successfully" >> ${{ steps.init-log.outputs.log_file }}
           
