@@ -148,4 +148,181 @@ jobs:
                 body: aiResponse,
                 replyToId: commentId
               });
-            } 
+            }
+      
+      - name: Get workflow run logs for analysis
+        id: get-logs
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const workflowName = 'Discussion Assistant';
+            
+            // Get workflow ID by name
+            const { data: workflows } = await github.rest.actions.listWorkflowsForRepo({
+              owner,
+              repo
+            });
+            
+            const workflow = workflows.workflows.find(w => w.name === workflowName);
+            if (!workflow) {
+              core.setFailed(`Could not find workflow with name: ${workflowName}`);
+              return;
+            }
+            
+            // Get workflow runs
+            const { data: runs } = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: workflow.id,
+              per_page: 5  // Get the most recent runs
+            });
+            
+            if (!runs.workflow_runs || runs.workflow_runs.length === 0) {
+              core.setFailed('No workflow runs found');
+              return;
+            }
+            
+            // Get latest workflow run
+            const latestRun = runs.workflow_runs[0];
+            
+            // Get logs URL
+            const { data: logsUrl } = await github.rest.actions.getWorkflowRunLogs({
+              owner,
+              repo,
+              run_id: latestRun.id
+            });
+            
+            // Download logs using curl
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+            
+            try {
+              // Download the logs (which is a zip file)
+              execSync(`curl -L "${logsUrl.url}" -o logs.zip`);
+              
+              // Create directory for logs
+              execSync('mkdir -p workflow_logs');
+              
+              // Extract the logs
+              execSync('unzip -o logs.zip -d workflow_logs');
+              
+              // Read the workflow file
+              const workflowContent = fs.readFileSync('.github/workflows/discussion-assistant.yml', 'utf8');
+              
+              // Combine all log files into a single file for analysis
+              execSync('cat workflow_logs/*.txt > combined_logs.txt');
+              const logContent = fs.readFileSync('combined_logs.txt', 'utf8');
+              
+              // Store the content for the next step
+              fs.writeFileSync('workflow_file.yml', workflowContent);
+              
+              return {
+                workflowContent,
+                logContent: logContent.length > 50000 ? logContent.substring(0, 50000) + '...[truncated]' : logContent
+              };
+            } catch (error) {
+              core.setFailed(`Error processing logs: ${error.message}`);
+              return null;
+            }
+      
+      - name: Analyze logs and suggest improvements
+        id: analyze-logs
+        if: success() && steps.get-logs.outputs.result
+        run: |
+          # Get workflow content and logs from previous step
+          WORKFLOW_CONTENT=$(cat workflow_file.yml)
+          LOG_CONTENT=$(cat combined_logs.txt)
+          
+          # Create the prompt for analysis
+          ANALYSIS_PROMPT="Analyze the following GitHub Action workflow and its execution logs. 
+          
+          WORKFLOW FILE:
+          \`\`\`yaml
+          $WORKFLOW_CONTENT
+          \`\`\`
+          
+          EXECUTION LOGS (partial):
+          \`\`\`
+          $LOG_CONTENT
+          \`\`\`
+          
+          Please analyze these logs and the workflow configuration to identify any potential issues, inefficiencies, or improvements that could be made. Consider:
+          
+          1. Error patterns or warnings in the logs
+          2. Performance bottlenecks
+          3. Best practices for GitHub Actions that aren't being followed
+          4. Security concerns
+          5. Reliability improvements
+          6. Code quality suggestions
+          
+          If you find any potential improvements:
+          1. Provide a detailed explanation of each issue
+          2. Suggest a specific solution with example code where appropriate
+          3. Explain the benefits of implementing the suggested changes
+          
+          Format your response as a structured GitHub issue that could be created to track these improvements."
+          
+          # Call Together AI API for analysis
+          RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
+            -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"model\": \"deepseek-ai/DeepSeek-R1\",
+              \"messages\": [{\"role\": \"user\", \"content\": \"$ANALYSIS_PROMPT\"}]
+            }")
+          
+          # Extract the content from the response
+          ANALYSIS=$(echo $RESPONSE | jq -r '.choices[0].message.content')
+          
+          # Save the analysis to a file
+          echo "$ANALYSIS" > workflow_analysis.txt
+          
+          # Check if the analysis contains suggestions (simple heuristic)
+          if grep -q -i "improvement\|issue\|suggestion\|recommend\|fix\|enhance" workflow_analysis.txt; then
+            echo "has_suggestions=true" >> $GITHUB_OUTPUT
+            
+            # Format for GitHub output
+            echo "analysis<<EOF" >> $GITHUB_OUTPUT
+            cat workflow_analysis.txt >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "has_suggestions=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create improvement issue
+        if: steps.analyze-logs.outputs.has_suggestions == 'true'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const analysis = `${{ steps.analyze-logs.outputs.analysis }}`;
+            
+            // Determine a good title from the analysis (take first line or generate one)
+            let title = "Workflow Improvement Suggestions for Discussion Assistant";
+            const firstLine = analysis.split('\n')[0].trim();
+            if (firstLine && firstLine.length > 10 && firstLine.length < 100) {
+              title = firstLine;
+            }
+            
+            // Get repository owner for assignee
+            const { data: repoData } = await github.rest.repos.get({
+              owner,
+              repo
+            });
+            
+            const assignee = repoData.owner.login;
+            
+            // Create the issue
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title,
+              body: analysis,
+              labels: ['automation', 'improvement', 'workflow'],
+              assignees: [assignee]
+            });
+            
+            console.log(`Created improvement issue: ${title}`); 
