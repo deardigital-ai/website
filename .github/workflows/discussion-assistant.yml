@@ -231,25 +231,142 @@ jobs:
                   `- Comment ID: ${result.addDiscussionComment.comment.id}\n\n`
                 );
               } else if (eventName === 'discussion_comment') {
-                // Reply to the comment
-                const result = await github.graphql(`
-                  mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
-                    addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
-                      comment {
-                        id
+                try {
+                  // First try to reply directly to the comment
+                  fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Attempting to reply directly to comment\n`);
+                  
+                  const result = await github.graphql(`
+                    mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
+                      addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
+                        comment {
+                          id
+                        }
                       }
                     }
+                  `, {
+                    discussionId: discussionId,
+                    body: aiResponse,
+                    replyToId: commentId
+                  });
+                  
+                  fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                    `- ✅ Successfully posted reply to comment\n` +
+                    `- Reply ID: ${result.addDiscussionComment.comment.id}\n\n`
+                  );
+                } catch (replyError) {
+                  fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                    `- ⚠️ Error replying directly: ${replyError.message}\n` +
+                    `- Will try to find parent comment or fallback to a new comment\n`
+                  );
+                  
+                  // Check if this is a "already in thread" error
+                  const alreadyInThreadError = replyError.message.includes("Parent comment is already in a thread");
+                  
+                  if (alreadyInThreadError) {
+                    try {
+                      // Get the discussion to find the parent comment of the thread
+                      const { repository } = context.payload;
+                      fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                        `- Looking for parent comment for comment ID: ${commentId}\n`
+                      );
+                      
+                      // First, get the comment details to determine if it has a parent
+                      const commentQuery = `
+                        query($owner: String!, $repo: String!, $discussionNumber: Int!, $commentId: ID!) {
+                          repository(owner: $owner, name: $repo) {
+                            discussion(number: $discussionNumber) {
+                              comments(first: 100) {
+                                nodes {
+                                  id
+                                  replies(first: 10) {
+                                    nodes {
+                                      id
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      `;
+                      
+                      const variables = {
+                        owner: repository.owner.login,
+                        repo: repository.name,
+                        discussionNumber: context.payload.discussion.number,
+                        commentId: commentId
+                      };
+                      
+                      const discussionData = await github.graphql(commentQuery, variables);
+                      const comments = discussionData.repository.discussion.comments.nodes;
+                      
+                      // Find a parent comment that contains our comment ID in its replies
+                      let parentCommentId = null;
+                      for (const comment of comments) {
+                        const replyIds = comment.replies.nodes.map(reply => reply.id);
+                        if (replyIds.includes(commentId)) {
+                          parentCommentId = comment.id;
+                          break;
+                        }
+                      }
+                      
+                      if (parentCommentId) {
+                        fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                          `- Found parent comment ID: ${parentCommentId}\n`
+                        );
+                        
+                        // Reply to the parent comment
+                        const parentResult = await github.graphql(`
+                          mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
+                            addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
+                              comment {
+                                id
+                              }
+                            }
+                          }
+                        `, {
+                          discussionId: discussionId,
+                          body: aiResponse,
+                          replyToId: parentCommentId
+                        });
+                        
+                        fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                          `- ✅ Successfully posted reply to parent comment\n` +
+                          `- Reply ID: ${parentResult.addDiscussionComment.comment.id}\n\n`
+                        );
+                      } else {
+                        throw new Error("Could not find parent comment");
+                      }
+                    } catch (parentError) {
+                      fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                        `- ⚠️ Error finding parent: ${parentError.message}\n` +
+                        `- Falling back to posting a new top-level comment\n`
+                      );
+                      
+                      // Just post a new comment without specifying replyToId
+                      const fallbackResult = await github.graphql(`
+                        mutation($discussionId: ID!, $body: String!) {
+                          addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+                            comment {
+                              id
+                            }
+                          }
+                        }
+                      `, {
+                        discussionId: discussionId,
+                        body: aiResponse
+                      });
+                      
+                      fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                        `- ✅ Successfully posted fallback top-level comment\n` +
+                        `- Comment ID: ${fallbackResult.addDiscussionComment.comment.id}\n\n`
+                      );
+                    }
+                  } else {
+                    // For other types of errors, just fail
+                    throw replyError;
                   }
-                `, {
-                  discussionId: discussionId,
-                  body: aiResponse,
-                  replyToId: commentId
-                });
-                
-                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
-                  `- ✅ Successfully posted reply to comment\n` +
-                  `- Reply ID: ${result.addDiscussionComment.comment.id}\n\n`
-                );
+                }
               }
             } catch (error) {
               fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
