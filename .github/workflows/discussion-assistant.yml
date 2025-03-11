@@ -1,0 +1,151 @@
+name: Discussion Assistant
+
+on:
+  discussion:
+    types: [created]
+  discussion_comment:
+    types: [created, edited]
+
+jobs:
+  respond-to-discussion:
+    runs-on: self-hosted
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          
+      - name: Get discussion content
+        id: get-content
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const eventName = context.eventName;
+            let discussionContent = '';
+            let discussionId = '';
+            let commentId = null;
+            
+            if (eventName === 'discussion') {
+              const discussion = context.payload.discussion;
+              discussionContent = discussion.title + '\n\n' + discussion.body;
+              discussionId = discussion.node_id;
+            } else if (eventName === 'discussion_comment') {
+              const comment = context.payload.comment;
+              const discussion = context.payload.discussion;
+              discussionContent = discussion.title + '\n\n' + comment.body;
+              discussionId = discussion.node_id;
+              commentId = comment.node_id;
+            }
+            
+            // Get all previous comments to provide context
+            let allContent = discussionContent;
+            if (eventName === 'discussion_comment') {
+              const { repository } = context.payload;
+              const query = `
+                query($owner: String!, $repo: String!, $discussionNumber: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    discussion(number: $discussionNumber) {
+                      comments(first: 100) {
+                        nodes {
+                          author {
+                            login
+                          }
+                          body
+                          createdAt
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+              
+              const variables = {
+                owner: repository.owner.login,
+                repo: repository.name,
+                discussionNumber: context.payload.discussion.number
+              };
+              
+              const result = await github.graphql(query, variables);
+              const comments = result.repository.discussion.comments.nodes;
+              
+              // Append all previous comments to provide context
+              if (comments.length > 0) {
+                allContent += '\n\nPrevious comments:\n';
+                for (const comment of comments) {
+                  allContent += `\n@${comment.author.login} said: ${comment.body}\n`;
+                }
+              }
+            }
+            
+            core.setOutput('discussion_content', allContent);
+            core.setOutput('discussion_id', discussionId);
+            core.setOutput('comment_id', commentId);
+      
+      - name: Call Together AI API
+        id: ai-response
+        run: |
+          RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
+            -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "deepseek-ai/DeepSeek-R1",
+              "messages": [{"role": "user", "content": "${{ steps.get-content.outputs.discussion_content }}"}]
+            }')
+          
+          # Extract the content from the response
+          CONTENT=$(echo $RESPONSE | jq -r '.choices[0].message.content')
+          
+          # Save the content to a file to preserve newlines and formatting
+          echo "$CONTENT" > response.txt
+          
+          # Set the content as an output in a format that can be used in the next step
+          echo "content<<EOF" >> $GITHUB_OUTPUT
+          cat response.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: Post response to discussion
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const eventName = context.eventName;
+            const discussionId = '${{ steps.get-content.outputs.discussion_id }}';
+            const commentId = '${{ steps.get-content.outputs.comment_id }}';
+            const aiResponse = `${{ steps.ai-response.outputs.content }}`;
+            
+            // Add a comment with the AI response
+            if (eventName === 'discussion') {
+              // Add a new comment to the discussion
+              await github.graphql(`
+                mutation($discussionId: ID!, $body: String!) {
+                  addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+                    comment {
+                      id
+                    }
+                  }
+                }
+              `, {
+                discussionId: discussionId,
+                body: aiResponse
+              });
+            } else if (eventName === 'discussion_comment') {
+              // Reply to the comment
+              await github.graphql(`
+                mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
+                  addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
+                    comment {
+                      id
+                    }
+                  }
+                }
+              `, {
+                discussionId: discussionId,
+                body: aiResponse,
+                replyToId: commentId
+              });
+            } 
