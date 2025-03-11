@@ -149,34 +149,87 @@ jobs:
         run: |
           echo "### Calling Together AI API at $(date)" >> ${{ steps.init-log.outputs.log_file }}
           echo "- Model: deepseek-ai/DeepSeek-R1" >> ${{ steps.init-log.outputs.log_file }}
-          echo "- Input content length: $(echo "${{ steps.get-content.outputs.discussion_content }}" | wc -c) bytes" >> ${{ steps.init-log.outputs.log_file }}
+          
+          # Create a properly escaped JSON version of the content
+          CONTENT_TO_PROCESS="${{ steps.get-content.outputs.discussion_content }}"
+          
+          # Check if content is too short
+          if [[ ${#CONTENT_TO_PROCESS} -lt 10 ]]; then
+            echo "- ⚠️ Content is very short (${#CONTENT_TO_PROCESS} characters). Adding context." >> ${{ steps.init-log.outputs.log_file }}
+            CONTENT_TO_PROCESS="This is a short message in a GitHub discussion: ${CONTENT_TO_PROCESS}"
+          fi
+          
+          echo "- Input content length: ${#CONTENT_TO_PROCESS} bytes" >> ${{ steps.init-log.outputs.log_file }}
+          
+          # Store the content in a file for processing
+          echo "$CONTENT_TO_PROCESS" > input_content.txt
+          
+          # Create properly JSON-escaped payload using jq
+          PAYLOAD=$(jq -n --rawfile content input_content.txt '{"model": "deepseek-ai/DeepSeek-R1", "messages": [{"role": "user", "content": $content}]}')
+          
+          echo "- JSON payload created successfully" >> ${{ steps.init-log.outputs.log_file }}
           
           # Start timer
           START_TIME=$(date +%s)
           
-          RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
-            -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "model": "deepseek-ai/DeepSeek-R1",
-              "messages": [{"role": "user", "content": "${{ steps.get-content.outputs.discussion_content }}"}]
-            }')
+          # Add retry logic for API calls
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          SUCCESS=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
+            if [ $RETRY_COUNT -gt 0 ]; then
+              echo "- 🔄 Retry attempt $RETRY_COUNT..." >> ${{ steps.init-log.outputs.log_file }}
+              sleep $(( RETRY_COUNT * 2 ))  # Progressive backoff
+            fi
+            
+            RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
+              -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD")
+            
+            # Check if the response contains an error
+            ERROR_CHECK=$(echo $RESPONSE | jq -r 'if has("error") then .error.message else "no_error" end')
+            
+            if [[ "$ERROR_CHECK" == "no_error" ]]; then
+              # Check if we can extract content (additional validation)
+              CONTENT_CHECK=$(echo $RESPONSE | jq -r 'if has("choices") and (.choices | length > 0) and has("choices"[0].message.content) then "has_content" else "no_content" end')
+              
+              if [[ "$CONTENT_CHECK" == "has_content" ]]; then
+                SUCCESS=true
+              else
+                echo "- ⚠️ API returned a response but no valid content found (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
+              fi
+            else
+              echo "- ⚠️ API Error (attempt $((RETRY_COUNT+1))): $ERROR_CHECK" >> ${{ steps.init-log.outputs.log_file }}
+            fi
+            
+            RETRY_COUNT=$((RETRY_COUNT+1))
+          done
           
           # End timer
           END_TIME=$(date +%s)
           ELAPSED_TIME=$((END_TIME - START_TIME))
           
-          # Extract the content from the response
-          CONTENT=$(echo $RESPONSE | jq -r '.choices[0].message.content')
+          echo "- API interaction completed in ${ELAPSED_TIME} seconds" >> ${{ steps.init-log.outputs.log_file }}
           
-          # Log API response details
-          echo "- API response received in ${ELAPSED_TIME} seconds" >> ${{ steps.init-log.outputs.log_file }}
-          echo "- Response length: $(echo "$CONTENT" | wc -c) bytes" >> ${{ steps.init-log.outputs.log_file }}
-          
-          # Check if the response contains an error
-          if [[ $(echo $RESPONSE | jq -r 'has("error")') == "true" ]]; then
-            ERROR=$(echo $RESPONSE | jq -r '.error.message')
-            echo "- ❌ API Error: $ERROR" >> ${{ steps.init-log.outputs.log_file }}
+          if [[ "$SUCCESS" == "true" ]]; then
+            # Extract the content from the response
+            CONTENT=$(echo $RESPONSE | jq -r '.choices[0].message.content')
+            
+            # Log API response details
+            echo "- ✅ API response successful" >> ${{ steps.init-log.outputs.log_file }}
+            echo "- Response length: ${#CONTENT} bytes" >> ${{ steps.init-log.outputs.log_file }}
+            
+            # Check if content is empty or too short
+            if [[ -z "$CONTENT" || ${#CONTENT} -lt 5 ]]; then
+              echo "- ⚠️ Response content too short or empty. Using default response." >> ${{ steps.init-log.outputs.log_file }}
+              CONTENT="I'm sorry, I couldn't generate a proper response. Please try again with more details."
+            fi
+          else
+            # Use a fallback message if all retries failed
+            echo "- ❌ All API attempts failed. Using fallback message." >> ${{ steps.init-log.outputs.log_file }}
+            CONTENT="I apologize, but I'm currently experiencing technical difficulties. Your message has been received, and we'll address it as soon as possible."
           fi
           
           echo "" >> ${{ steps.init-log.outputs.log_file }}
@@ -199,6 +252,12 @@ jobs:
             const discussionId = '${{ steps.get-content.outputs.discussion_id }}';
             const commentId = '${{ steps.get-content.outputs.comment_id }}';
             const aiResponse = `${{ steps.ai-response.outputs.content }}`;
+            
+            // Validate we have a proper response to post
+            if (!aiResponse || aiResponse.trim().length < 3) {
+              core.setFailed('AI response is empty or too short to post');
+              return;
+            }
             
             const fs = require('fs');
             fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
@@ -266,19 +325,21 @@ jobs:
                     try {
                       // Get the discussion to find the parent comment of the thread
                       const { repository } = context.payload;
+                      const discussionNumber = context.payload.discussion.number;
+                      
                       fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
-                        `- Looking for parent comment for comment ID: ${commentId}\n`
+                        `- Looking for parent comment in discussion #${discussionNumber}\n`
                       );
                       
-                      // First, get the comment details to determine if it has a parent
+                      // First, get the discussion and all its comments and replies
                       const commentQuery = `
-                        query($owner: String!, $repo: String!, $discussionNumber: Int!, $commentId: ID!) {
+                        query($owner: String!, $repo: String!, $number: Int!) {
                           repository(owner: $owner, name: $repo) {
-                            discussion(number: $discussionNumber) {
+                            discussion(number: $number) {
                               comments(first: 100) {
                                 nodes {
                                   id
-                                  replies(first: 10) {
+                                  replies(first: 50) {
                                     nodes {
                                       id
                                     }
@@ -293,21 +354,49 @@ jobs:
                       const variables = {
                         owner: repository.owner.login,
                         repo: repository.name,
-                        discussionNumber: context.payload.discussion.number,
-                        commentId: commentId
+                        number: discussionNumber
                       };
                       
+                      fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                        `- Querying discussion with variables: ${JSON.stringify(variables)}\n`
+                      );
+                      
                       const discussionData = await github.graphql(commentQuery, variables);
+                      
+                      if (!discussionData || !discussionData.repository || !discussionData.repository.discussion) {
+                        throw new Error("Failed to retrieve discussion data");
+                      }
+                      
                       const comments = discussionData.repository.discussion.comments.nodes;
+                      fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                        `- Found ${comments.length} top-level comments\n`
+                      );
                       
                       // Find a parent comment that contains our comment ID in its replies
                       let parentCommentId = null;
+                      
+                      // Debug log the comment we're looking for
+                      fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                        `- Looking for comment with ID: ${commentId}\n`
+                      );
+                      
                       for (const comment of comments) {
-                        const replyIds = comment.replies.nodes.map(reply => reply.id);
-                        if (replyIds.includes(commentId)) {
-                          parentCommentId = comment.id;
-                          break;
+                        const replies = comment.replies.nodes;
+                        fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                          `- Checking comment ${comment.id} with ${replies.length} replies\n`
+                        );
+                        
+                        for (const reply of replies) {
+                          if (reply.id === commentId) {
+                            parentCommentId = comment.id;
+                            fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                              `- Match found! Comment ${commentId} is a reply to ${parentCommentId}\n`
+                            );
+                            break;
+                          }
                         }
+                        
+                        if (parentCommentId) break;
                       }
                       
                       if (parentCommentId) {
@@ -317,7 +406,7 @@ jobs:
                         
                         // Reply to the parent comment
                         const parentResult = await github.graphql(`
-                          mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
+                          mutation($discussionId: ID!, $body: String!, $replyToId: ID!) {
                             addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
                               comment {
                                 id
@@ -335,7 +424,7 @@ jobs:
                           `- Reply ID: ${parentResult.addDiscussionComment.comment.id}\n\n`
                         );
                       } else {
-                        throw new Error("Could not find parent comment");
+                        throw new Error("Could not find parent comment for this reply");
                       }
                     } catch (parentError) {
                       fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
@@ -523,106 +612,129 @@ jobs:
             WORKFLOW_CONTENT=$(cat workflow_file.yml)
             LOG_CONTENT=$(cat combined_logs.txt)
             
-            # Create the prompt for analysis with logs
-            ANALYSIS_PROMPT="Analyze the following GitHub Action workflow and its execution logs. 
+            # Create a JSON-safe prompt for analysis
+            ANALYSIS_PROMPT="Analyze the following GitHub Action workflow and its execution logs to identify improvements."
             
-            WORKFLOW FILE:
-            \`\`\`yaml
-            $WORKFLOW_CONTENT
-            \`\`\`
+            # Store the workflow content and logs in files
+            echo "$WORKFLOW_CONTENT" > workflow_content.txt
+            echo "$LOG_CONTENT" > log_content.txt
             
-            EXECUTION LOGS (partial):
-            \`\`\`
-            $LOG_CONTENT
-            \`\`\`
-            
-            Please analyze these logs and the workflow configuration to identify any potential issues, inefficiencies, or improvements that could be made. Consider:
-            
-            1. Error patterns or warnings in the logs
-            2. Performance bottlenecks
-            3. Best practices for GitHub Actions that aren't being followed
-            4. Security concerns
-            5. Reliability improvements
-            6. Code quality suggestions
-            
-            If you find any potential improvements:
-            1. Provide a detailed explanation of each issue
-            2. Suggest a specific solution with example code where appropriate
-            3. Explain the benefits of implementing the suggested changes
-            
-            Format your response as a structured GitHub issue that could be created to track these improvements."
           else
             echo "- Using only workflow file for analysis (no logs available)" >> ${{ steps.init-log.outputs.log_file }}
             # Only analyze the workflow file without logs
             WORKFLOW_CONTENT=$(cat workflow_file.yml)
             
-            # Create the prompt for analysis without logs
-            ANALYSIS_PROMPT="Analyze the following GitHub Action workflow configuration. 
+            # Create a JSON-safe prompt for analysis
+            ANALYSIS_PROMPT="Analyze the following GitHub Action workflow configuration to identify improvements."
             
-            WORKFLOW FILE:
-            \`\`\`yaml
-            $WORKFLOW_CONTENT
-            \`\`\`
-            
-            Please analyze this workflow configuration to identify any potential issues, inefficiencies, or improvements that could be made. Consider:
-            
-            1. Best practices for GitHub Actions that aren't being followed
-            2. Security concerns
-            3. Reliability improvements
-            4. Code quality suggestions
-            5. Potential error handling improvements
-            
-            If you find any potential improvements:
-            1. Provide a detailed explanation of each issue
-            2. Suggest a specific solution with example code where appropriate
-            3. Explain the benefits of implementing the suggested changes
-            
-            Format your response as a structured GitHub issue that could be created to track these improvements."
+            # Store the workflow content in a file
+            echo "$WORKFLOW_CONTENT" > workflow_content.txt
+            echo "" > log_content.txt
           fi
           
           # Start timer
           START_TIME=$(date +%s)
           
-          echo "- Sending analysis request to Together AI API" >> ${{ steps.init-log.outputs.log_file }}
+          echo "- Preparing analysis request to Together AI API" >> ${{ steps.init-log.outputs.log_file }}
           
-          # Call Together AI API for analysis
-          RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
-            -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"model\": \"deepseek-ai/DeepSeek-R1\",
-              \"messages\": [{\"role\": \"user\", \"content\": \"$ANALYSIS_PROMPT\"}]
-            }")
+          # Create JSON payload using jq for proper escaping
+          if [ "${{ steps.get-logs.outputs.has_logs }}" = "true" ] && [ -f "combined_logs.txt" ]; then
+            PAYLOAD=$(jq -n \
+              --arg prompt "$ANALYSIS_PROMPT" \
+              --rawfile workflow workflow_content.txt \
+              --rawfile logs log_content.txt \
+              '{
+                "model": "deepseek-ai/DeepSeek-R1",
+                "messages": [{
+                  "role": "user", 
+                  "content": ($prompt + "\n\nWORKFLOW FILE:\n```yaml\n" + $workflow + "\n```\n\nEXECUTION LOGS:\n```\n" + $logs + "\n```\n\nPlease analyze these and identify potential issues, inefficiencies, or improvements. Consider error patterns, performance bottlenecks, best practices, security concerns, reliability improvements, and code quality suggestions. Format your response as a structured GitHub issue with detailed explanations, specific solutions with example code, and benefits of implementing changes.")
+                }]
+              }')
+          else
+            PAYLOAD=$(jq -n \
+              --arg prompt "$ANALYSIS_PROMPT" \
+              --rawfile workflow workflow_content.txt \
+              '{
+                "model": "deepseek-ai/DeepSeek-R1",
+                "messages": [{
+                  "role": "user", 
+                  "content": ($prompt + "\n\nWORKFLOW FILE:\n```yaml\n" + $workflow + "\n```\n\nPlease analyze this configuration to identify potential issues, inefficiencies, or improvements. Consider best practices, security concerns, reliability improvements, code quality suggestions, and error handling. Format your response as a structured GitHub issue with detailed explanations, specific solutions with example code, and benefits of implementing changes.")
+                }]
+              }')
+          fi
+          
+          echo "- JSON payload created for analysis" >> ${{ steps.init-log.outputs.log_file }}
+          
+          # Add retry logic for API calls
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          SUCCESS=false
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
+            if [ $RETRY_COUNT -gt 0 ]; then
+              echo "- 🔄 Retry attempt $RETRY_COUNT for analysis..." >> ${{ steps.init-log.outputs.log_file }}
+              sleep $(( RETRY_COUNT * 2 ))  # Progressive backoff
+            fi
+            
+            # Call Together AI API for analysis
+            RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
+              -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD")
+            
+            # Check if the response contains an error
+            ERROR_CHECK=$(echo $RESPONSE | jq -r 'if has("error") then .error.message else "no_error" end')
+            
+            if [[ "$ERROR_CHECK" == "no_error" ]]; then
+              # Check if we can extract content (additional validation)
+              CONTENT_CHECK=$(echo $RESPONSE | jq -r 'if has("choices") and (.choices | length > 0) and has("choices"[0].message.content) then "has_content" else "no_content" end')
+              
+              if [[ "$CONTENT_CHECK" == "has_content" ]]; then
+                SUCCESS=true
+              else
+                echo "- ⚠️ API returned a response but no valid content found for analysis (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
+              fi
+            else
+              echo "- ⚠️ API Error during analysis (attempt $((RETRY_COUNT+1))): $ERROR_CHECK" >> ${{ steps.init-log.outputs.log_file }}
+            fi
+            
+            RETRY_COUNT=$((RETRY_COUNT+1))
+          done
           
           # End timer
           END_TIME=$(date +%s)
           ELAPSED_TIME=$((END_TIME - START_TIME))
           
-          echo "- Analysis response received in ${ELAPSED_TIME} seconds" >> ${{ steps.init-log.outputs.log_file }}
+          echo "- Analysis completed in ${ELAPSED_TIME} seconds" >> ${{ steps.init-log.outputs.log_file }}
           
-          # Extract the content from the response
-          ANALYSIS=$(echo $RESPONSE | jq -r '.choices[0].message.content')
-          
-          # Check if the response contains an error
-          if [[ $(echo $RESPONSE | jq -r 'has("error")') == "true" ]]; then
-            ERROR=$(echo $RESPONSE | jq -r '.error.message')
-            echo "- ❌ API Error during analysis: $ERROR" >> ${{ steps.init-log.outputs.log_file }}
-          fi
-          
-          # Save the analysis to a file
-          echo "$ANALYSIS" > workflow_analysis.txt
-          
-          # Check if the analysis contains suggestions (simple heuristic)
-          if grep -q -i "improvement\|issue\|suggestion\|recommend\|fix\|enhance" workflow_analysis.txt; then
-            echo "- ✅ Analysis found suggestions for improvement" >> ${{ steps.init-log.outputs.log_file }}
-            echo "has_suggestions=true" >> $GITHUB_OUTPUT
+          if [[ "$SUCCESS" == "true" ]]; then
+            # Extract the content from the response
+            ANALYSIS=$(echo $RESPONSE | jq -r '.choices[0].message.content')
             
-            # Format for GitHub output
-            echo "analysis<<EOF" >> $GITHUB_OUTPUT
-            cat workflow_analysis.txt >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
+            # Check for minimum analysis length
+            if [[ -z "$ANALYSIS" || ${#ANALYSIS} -lt 50 ]]; then
+              echo "- ⚠️ Analysis too short or empty. No suggestions available." >> ${{ steps.init-log.outputs.log_file }}
+              echo "has_suggestions=false" >> $GITHUB_OUTPUT
+            else
+              # Save the analysis to a file
+              echo "$ANALYSIS" > workflow_analysis.txt
+              
+              # More robust check for meaningful suggestions
+              if grep -q -E 'improvement|issue|suggestion|recommend|fix|enhance|optimize|refactor|update|upgrade|modify' workflow_analysis.txt; then
+                echo "- ✅ Analysis found suggestions for improvement" >> ${{ steps.init-log.outputs.log_file }}
+                echo "has_suggestions=true" >> $GITHUB_OUTPUT
+                
+                # Format for GitHub output
+                echo "analysis<<EOF" >> $GITHUB_OUTPUT
+                cat workflow_analysis.txt >> $GITHUB_OUTPUT
+                echo "EOF" >> $GITHUB_OUTPUT
+              else
+                echo "- ℹ️ No significant suggestions found in analysis" >> ${{ steps.init-log.outputs.log_file }}
+                echo "has_suggestions=false" >> $GITHUB_OUTPUT
+              fi
+            fi
           else
-            echo "- ℹ️ No significant suggestions found in analysis" >> ${{ steps.init-log.outputs.log_file }}
+            echo "- ❌ Failed to get analysis after $MAX_RETRIES attempts" >> ${{ steps.init-log.outputs.log_file }}
             echo "has_suggestions=false" >> $GITHUB_OUTPUT
           fi
           
