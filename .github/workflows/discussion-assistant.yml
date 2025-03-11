@@ -152,6 +152,7 @@ jobs:
       
       - name: Get workflow run logs for analysis
         id: get-logs
+        continue-on-error: true  # Don't fail the workflow if this step fails
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -159,77 +160,94 @@ jobs:
             const { owner, repo } = context.repo;
             const workflowName = 'Discussion Assistant';
             
-            // Get workflow ID by name
-            const { data: workflows } = await github.rest.actions.listRepoWorkflows({
-              owner,
-              repo
-            });
-            
-            const workflow = workflows.workflows.find(w => w.name === workflowName);
-            if (!workflow) {
-              core.setFailed(`Could not find workflow with name: ${workflowName}`);
-              return;
-            }
-            
-            // Get workflow runs
-            const { data: runs } = await github.rest.actions.listWorkflowRuns({
-              owner,
-              repo,
-              workflow_id: workflow.id,
-              per_page: 5  // Get the most recent runs
-            });
-            
-            if (!runs.workflow_runs || runs.workflow_runs.length === 0) {
-              core.setFailed('No workflow runs found');
-              return;
-            }
-            
-            // Get latest workflow run
-            const latestRun = runs.workflow_runs[0];
-            
-            // Get logs URL - Fix API function name
-            const { data: logsUrl } = await github.rest.actions.downloadWorkflowRunLogs({
-              owner,
-              repo,
-              run_id: latestRun.id
-            });
-            
-            // Download logs using curl
-            const fs = require('fs');
-            const { execSync } = require('child_process');
-            
             try {
-              // Download the logs (which is a zip file)
-              // The API returns a URL directly instead of an object with a url property
-              const logsDownloadUrl = typeof logsUrl === 'string' ? logsUrl : logsUrl.url;
-              execSync(`curl -L "${logsDownloadUrl}" -o logs.zip`);
+              // Get workflow ID by name
+              const { data: workflows } = await github.rest.actions.listRepoWorkflows({
+                owner,
+                repo
+              });
               
-              // Create directory for logs
-              execSync('mkdir -p workflow_logs');
+              const workflow = workflows.workflows.find(w => w.name === workflowName);
+              if (!workflow) {
+                core.warning(`Could not find workflow with name: ${workflowName}`);
+                return 'no_workflow_found';
+              }
               
-              // Extract the logs
-              execSync('unzip -o logs.zip -d workflow_logs');
+              // Get workflow runs
+              const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: workflow.id,
+                per_page: 5  // Get the most recent runs
+              });
               
-              // Read the workflow file
-              const workflowContent = fs.readFileSync('.github/workflows/discussion-assistant.yml', 'utf8');
+              if (!runs.workflow_runs || runs.workflow_runs.length <= 1) {
+                core.warning('Not enough workflow runs found for analysis');
+                return 'no_runs_found';
+              }
               
-              // Combine all log files into a single file for analysis
-              execSync('cat workflow_logs/*.txt > combined_logs.txt');
-              const logContent = fs.readFileSync('combined_logs.txt', 'utf8');
+              // Get second latest workflow run (to avoid getting the currently running workflow)
+              const previousRun = runs.workflow_runs[1];
               
-              // Store the content for the next step
-              fs.writeFileSync('workflow_file.yml', workflowContent);
-              
-              // Set outputs in a format that works with GitHub Actions
-              core.setOutput('result', 'success');
-              
-              // Due to limitations with large outputs, we'll rely on the files
-              // rather than trying to pass the content through outputs
-              console.log('Logs and workflow file prepared successfully');
-              return 'success';
+              try {
+                // Try to get logs URL
+                const { data: logsUrl } = await github.rest.actions.downloadWorkflowRunLogs({
+                  owner,
+                  repo,
+                  run_id: previousRun.id
+                });
+                
+                // Download logs using curl
+                const fs = require('fs');
+                const { execSync } = require('child_process');
+                
+                // The API returns a URL directly instead of an object with a url property
+                const logsDownloadUrl = typeof logsUrl === 'string' ? logsUrl : logsUrl.url;
+                execSync(`curl -L "${logsDownloadUrl}" -o logs.zip`);
+                
+                // Create directory for logs
+                execSync('mkdir -p workflow_logs');
+                
+                // Extract the logs
+                execSync('unzip -o logs.zip -d workflow_logs');
+                
+                // Combine all log files into a single file for analysis
+                execSync('cat workflow_logs/*.txt > combined_logs.txt');
+                const logContent = fs.readFileSync('combined_logs.txt', 'utf8');
+                
+                // Read the workflow file
+                const workflowContent = fs.readFileSync('.github/workflows/discussion-assistant.yml', 'utf8');
+                
+                // Store the content for the next step
+                fs.writeFileSync('workflow_file.yml', workflowContent);
+                
+                // Set outputs in a format that works with GitHub Actions
+                core.setOutput('result', 'success');
+                core.setOutput('has_logs', 'true');
+                
+                console.log('Logs and workflow file prepared successfully');
+                return 'success';
+              } catch (logsError) {
+                // If we can't get logs, we'll just analyze the workflow file without logs
+                console.log(`Error getting logs: ${logsError.message}`);
+                
+                // Read the workflow file
+                const fs = require('fs');
+                const workflowContent = fs.readFileSync('.github/workflows/discussion-assistant.yml', 'utf8');
+                
+                // Store the content for the next step
+                fs.writeFileSync('workflow_file.yml', workflowContent);
+                
+                // Set outputs in a format that works with GitHub Actions
+                core.setOutput('result', 'success');
+                core.setOutput('has_logs', 'false');
+                
+                console.log('Only workflow file prepared (no logs available)');
+                return 'success_without_logs';
+              }
             } catch (error) {
-              core.setFailed(`Error processing logs: ${error.message}`);
-              return null;
+              core.warning(`Error in workflow analysis preparation: ${error.message}`);
+              return 'error';
             }
       
       - name: Analyze logs and suggest improvements
@@ -238,48 +256,71 @@ jobs:
         run: |
           # Check if the workflow_file.yml exists before proceeding
           if [ ! -f "workflow_file.yml" ]; then
-            echo "::error::workflow_file.yml not found. Skipping analysis."
+            echo "::warning::workflow_file.yml not found. Skipping analysis."
             exit 0
           fi
           
-          # Check if combined_logs.txt exists before proceeding
-          if [ ! -f "combined_logs.txt" ]; then
-            echo "::error::combined_logs.txt not found. Skipping analysis."
-            exit 0
+          # Create the analysis prompt based on available data
+          if [ "${{ steps.get-logs.outputs.has_logs }}" = "true" ] && [ -f "combined_logs.txt" ]; then
+            # Get workflow content and logs for analysis
+            WORKFLOW_CONTENT=$(cat workflow_file.yml)
+            LOG_CONTENT=$(cat combined_logs.txt)
+            
+            # Create the prompt for analysis with logs
+            ANALYSIS_PROMPT="Analyze the following GitHub Action workflow and its execution logs. 
+            
+            WORKFLOW FILE:
+            \`\`\`yaml
+            $WORKFLOW_CONTENT
+            \`\`\`
+            
+            EXECUTION LOGS (partial):
+            \`\`\`
+            $LOG_CONTENT
+            \`\`\`
+            
+            Please analyze these logs and the workflow configuration to identify any potential issues, inefficiencies, or improvements that could be made. Consider:
+            
+            1. Error patterns or warnings in the logs
+            2. Performance bottlenecks
+            3. Best practices for GitHub Actions that aren't being followed
+            4. Security concerns
+            5. Reliability improvements
+            6. Code quality suggestions
+            
+            If you find any potential improvements:
+            1. Provide a detailed explanation of each issue
+            2. Suggest a specific solution with example code where appropriate
+            3. Explain the benefits of implementing the suggested changes
+            
+            Format your response as a structured GitHub issue that could be created to track these improvements."
+          else
+            # Only analyze the workflow file without logs
+            WORKFLOW_CONTENT=$(cat workflow_file.yml)
+            
+            # Create the prompt for analysis without logs
+            ANALYSIS_PROMPT="Analyze the following GitHub Action workflow configuration. 
+            
+            WORKFLOW FILE:
+            \`\`\`yaml
+            $WORKFLOW_CONTENT
+            \`\`\`
+            
+            Please analyze this workflow configuration to identify any potential issues, inefficiencies, or improvements that could be made. Consider:
+            
+            1. Best practices for GitHub Actions that aren't being followed
+            2. Security concerns
+            3. Reliability improvements
+            4. Code quality suggestions
+            5. Potential error handling improvements
+            
+            If you find any potential improvements:
+            1. Provide a detailed explanation of each issue
+            2. Suggest a specific solution with example code where appropriate
+            3. Explain the benefits of implementing the suggested changes
+            
+            Format your response as a structured GitHub issue that could be created to track these improvements."
           fi
-          
-          # Get workflow content and logs from previous step
-          WORKFLOW_CONTENT=$(cat workflow_file.yml)
-          LOG_CONTENT=$(cat combined_logs.txt)
-          
-          # Create the prompt for analysis
-          ANALYSIS_PROMPT="Analyze the following GitHub Action workflow and its execution logs. 
-          
-          WORKFLOW FILE:
-          \`\`\`yaml
-          $WORKFLOW_CONTENT
-          \`\`\`
-          
-          EXECUTION LOGS (partial):
-          \`\`\`
-          $LOG_CONTENT
-          \`\`\`
-          
-          Please analyze these logs and the workflow configuration to identify any potential issues, inefficiencies, or improvements that could be made. Consider:
-          
-          1. Error patterns or warnings in the logs
-          2. Performance bottlenecks
-          3. Best practices for GitHub Actions that aren't being followed
-          4. Security concerns
-          5. Reliability improvements
-          6. Code quality suggestions
-          
-          If you find any potential improvements:
-          1. Provide a detailed explanation of each issue
-          2. Suggest a specific solution with example code where appropriate
-          3. Explain the benefits of implementing the suggested changes
-          
-          Format your response as a structured GitHub issue that could be created to track these improvements."
           
           # Call Together AI API for analysis
           RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
