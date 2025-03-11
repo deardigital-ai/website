@@ -201,27 +201,44 @@ jobs:
             CURL_STATUS=$?
             echo "- Curl request completed with status: $CURL_STATUS" >> ${{ steps.init-log.outputs.log_file }}
             
-            # Check if the response contains an error
-            ERROR_CHECK=$(echo "$RESPONSE" | jq -r 'if has("error") then .error.message else "no_error" end')
+            # Check if the response contains an error - with improved error handling
+            ERROR_CHECK=$(echo "$RESPONSE" | jq -r 'if has("error") then .error.message else "no_error" end' 2>/dev/null || echo "json_parse_error")
             
-            if [[ "$ERROR_CHECK" == "no_error" ]]; then
-              # Check if we can extract content (additional validation)
-              CONTENT_CHECK=$(echo "$RESPONSE" | jq -r 'if has("choices") and (.choices | length > 0) and has("choices"[0].message.content) then "has_content" else "no_content" end')
+            if [[ "$ERROR_CHECK" == "json_parse_error" ]]; then
+              echo "- ⚠️ API returned non-JSON response (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
+              echo "- Response excerpt: $(echo "$RESPONSE" | head -c 100)..." >> ${{ steps.init-log.outputs.log_file }}
+            elif [[ "$ERROR_CHECK" == "no_error" ]]; then
+              # First check if the response is valid JSON and has the expected structure
+              VALID_JSON=$(echo "$RESPONSE" | jq -r 'if type=="object" and has("choices") then "valid" else "invalid" end' 2>/dev/null || echo "invalid")
               
-              if [[ "$CONTENT_CHECK" == "has_content" ]]; then
-                SUCCESS=true
-                echo "- ✅ Valid API response received" >> ${{ steps.init-log.outputs.log_file }}
+              if [[ "$VALID_JSON" == "valid" ]]; then
+                # Check specific issue: The "choices" key exists but might not be an array (causing "Cannot index string with number" error)
+                CHOICES_TYPE=$(echo "$RESPONSE" | jq -r '.choices | type' 2>/dev/null || echo "unknown")
+                
+                if [[ "$CHOICES_TYPE" != "array" ]]; then
+                  echo "- ⚠️ API returned malformed choices structure (not an array) - attempt $((RETRY_COUNT+1))" >> ${{ steps.init-log.outputs.log_file }}
+                  echo "- Choices type: $CHOICES_TYPE" >> ${{ steps.init-log.outputs.log_file }}
+                else
+                  # Then check if we can extract content safely
+                  HAS_CONTENT=$(echo "$RESPONSE" | jq -r '.choices | if length > 0 and (.[0] | has("message")) and (.[0].message | has("content")) then "has_content" else "no_content" end' 2>/dev/null || echo "error")
+                  
+                  if [[ "$HAS_CONTENT" == "has_content" ]]; then
+                    SUCCESS=true
+                    echo "- ✅ Valid API response received with proper content structure" >> ${{ steps.init-log.outputs.log_file }}
+                  else
+                    echo "- ⚠️ API returned a valid JSON but missing expected content (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
+                  fi
+                fi
               else
-                echo "- ⚠️ API returned a response but no valid content found (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
+                echo "- ⚠️ API returned invalid JSON structure (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
               fi
             else
               # Log more details about the error
               echo "- ⚠️ API Error (attempt $((RETRY_COUNT+1))): $ERROR_CHECK" >> ${{ steps.init-log.outputs.log_file }}
               echo "- Response excerpt: $(echo "$RESPONSE" | head -c 100)..." >> ${{ steps.init-log.outputs.log_file }}
               
-              # If this is the last retry and we're still failing with JSON errors, 
-              # try a drastically simplified payload for the final attempt
-              if [[ $RETRY_COUNT -eq $(($MAX_RETRIES-1)) && "$ERROR_CHECK" == *"JSON"* ]]; then
+              # If this is the last retry and we're still failing, try a simplified payload
+              if [[ $RETRY_COUNT -eq $(($MAX_RETRIES-1)) ]]; then
                 echo "- 🔄 Final attempt with simplified payload" >> ${{ steps.init-log.outputs.log_file }}
                 echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Please respond to: Simple test message\"}]}" > payload.json
               fi
@@ -237,8 +254,8 @@ jobs:
           echo "- API interaction completed in ${ELAPSED_TIME} seconds" >> ${{ steps.init-log.outputs.log_file }}
           
           if [[ "$SUCCESS" == "true" ]]; then
-            # Extract the content from the response
-            CONTENT=$(echo $RESPONSE | jq -r '.choices[0].message.content')
+            # Extract the content from the response - with added safety
+            CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null || echo "")
             
             # Log API response details
             echo "- ✅ API response successful" >> ${{ steps.init-log.outputs.log_file }}
@@ -706,17 +723,36 @@ jobs:
               -H "Content-Type: application/json" \
               -d "$PAYLOAD")
             
-            # Check if the response contains an error
-            ERROR_CHECK=$(echo $RESPONSE | jq -r 'if has("error") then .error.message else "no_error" end')
+            # Check if the response contains an error - with improved error handling
+            ERROR_CHECK=$(echo "$RESPONSE" | jq -r 'if has("error") then .error.message else "no_error" end' 2>/dev/null || echo "json_parse_error")
             
-            if [[ "$ERROR_CHECK" == "no_error" ]]; then
-              # Check if we can extract content (additional validation)
-              CONTENT_CHECK=$(echo $RESPONSE | jq -r 'if has("choices") and (.choices | length > 0) and has("choices"[0].message.content) then "has_content" else "no_content" end')
+            if [[ "$ERROR_CHECK" == "json_parse_error" ]]; then
+              echo "- ⚠️ API returned non-JSON response for analysis (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
+              echo "- Response excerpt: $(echo "$RESPONSE" | head -c 100)..." >> ${{ steps.init-log.outputs.log_file }}
+            elif [[ "$ERROR_CHECK" == "no_error" ]]; then
+              # First check if the response is valid JSON and has the expected structure
+              VALID_JSON=$(echo "$RESPONSE" | jq -r 'if type=="object" and has("choices") then "valid" else "invalid" end' 2>/dev/null || echo "invalid")
               
-              if [[ "$CONTENT_CHECK" == "has_content" ]]; then
-                SUCCESS=true
+              if [[ "$VALID_JSON" == "valid" ]]; then
+                # Check specific issue: The "choices" key exists but might not be an array (causing "Cannot index string with number" error)
+                CHOICES_TYPE=$(echo "$RESPONSE" | jq -r '.choices | type' 2>/dev/null || echo "unknown")
+                
+                if [[ "$CHOICES_TYPE" != "array" ]]; then
+                  echo "- ⚠️ API returned malformed choices structure for analysis (not an array) - attempt $((RETRY_COUNT+1))" >> ${{ steps.init-log.outputs.log_file }}
+                  echo "- Choices type: $CHOICES_TYPE" >> ${{ steps.init-log.outputs.log_file }}
+                else
+                  # Then check if we can extract content safely
+                  HAS_CONTENT=$(echo "$RESPONSE" | jq -r '.choices | if length > 0 and (.[0] | has("message")) and (.[0].message | has("content")) then "has_content" else "no_content" end' 2>/dev/null || echo "error")
+                  
+                  if [[ "$HAS_CONTENT" == "has_content" ]]; then
+                    SUCCESS=true
+                    echo "- ✅ Valid analysis response received" >> ${{ steps.init-log.outputs.log_file }}
+                  else
+                    echo "- ⚠️ API returned a valid JSON but missing expected content in analysis (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
+                  fi
+                fi
               else
-                echo "- ⚠️ API returned a response but no valid content found for analysis (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
+                echo "- ⚠️ API returned invalid JSON structure for analysis (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
               fi
             else
               echo "- ⚠️ API Error during analysis (attempt $((RETRY_COUNT+1))): $ERROR_CHECK" >> ${{ steps.init-log.outputs.log_file }}
@@ -732,10 +768,10 @@ jobs:
           echo "- Analysis completed in ${ELAPSED_TIME} seconds" >> ${{ steps.init-log.outputs.log_file }}
           
           if [[ "$SUCCESS" == "true" ]]; then
-            # Extract the content from the response
-            ANALYSIS=$(echo $RESPONSE | jq -r '.choices[0].message.content')
+            # Extract the content from the response with added safety
+            ANALYSIS=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null || echo "")
             
-            # Check for minimum analysis length
+            # Continue with the existing analysis checks
             if [[ -z "$ANALYSIS" || ${#ANALYSIS} -lt 50 ]]; then
               echo "- ⚠️ Analysis too short or empty. No suggestions available." >> ${{ steps.init-log.outputs.log_file }}
               echo "has_suggestions=false" >> $GITHUB_OUTPUT
