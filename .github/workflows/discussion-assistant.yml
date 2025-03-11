@@ -160,7 +160,7 @@ jobs:
             const workflowName = 'Discussion Assistant';
             
             // Get workflow ID by name
-            const { data: workflows } = await github.rest.actions.listWorkflowsForRepo({
+            const { data: workflows } = await github.rest.actions.listRepoWorkflows({
               owner,
               repo
             });
@@ -187,8 +187,8 @@ jobs:
             // Get latest workflow run
             const latestRun = runs.workflow_runs[0];
             
-            // Get logs URL
-            const { data: logsUrl } = await github.rest.actions.getWorkflowRunLogs({
+            // Get logs URL - Fix API function name
+            const { data: logsUrl } = await github.rest.actions.downloadWorkflowRunLogs({
               owner,
               repo,
               run_id: latestRun.id
@@ -200,7 +200,9 @@ jobs:
             
             try {
               // Download the logs (which is a zip file)
-              execSync(`curl -L "${logsUrl.url}" -o logs.zip`);
+              // The API returns a URL directly instead of an object with a url property
+              const logsDownloadUrl = typeof logsUrl === 'string' ? logsUrl : logsUrl.url;
+              execSync(`curl -L "${logsDownloadUrl}" -o logs.zip`);
               
               // Create directory for logs
               execSync('mkdir -p workflow_logs');
@@ -218,10 +220,13 @@ jobs:
               // Store the content for the next step
               fs.writeFileSync('workflow_file.yml', workflowContent);
               
-              return {
-                workflowContent,
-                logContent: logContent.length > 50000 ? logContent.substring(0, 50000) + '...[truncated]' : logContent
-              };
+              // Set outputs in a format that works with GitHub Actions
+              core.setOutput('result', 'success');
+              
+              // Due to limitations with large outputs, we'll rely on the files
+              // rather than trying to pass the content through outputs
+              console.log('Logs and workflow file prepared successfully');
+              return 'success';
             } catch (error) {
               core.setFailed(`Error processing logs: ${error.message}`);
               return null;
@@ -229,8 +234,20 @@ jobs:
       
       - name: Analyze logs and suggest improvements
         id: analyze-logs
-        if: success() && steps.get-logs.outputs.result
+        if: success() && steps.get-logs.outputs.result != ''
         run: |
+          # Check if the workflow_file.yml exists before proceeding
+          if [ ! -f "workflow_file.yml" ]; then
+            echo "::error::workflow_file.yml not found. Skipping analysis."
+            exit 0
+          fi
+          
+          # Check if combined_logs.txt exists before proceeding
+          if [ ! -f "combined_logs.txt" ]; then
+            echo "::error::combined_logs.txt not found. Skipping analysis."
+            exit 0
+          fi
+          
           # Get workflow content and logs from previous step
           WORKFLOW_CONTENT=$(cat workflow_file.yml)
           LOG_CONTENT=$(cat combined_logs.txt)
