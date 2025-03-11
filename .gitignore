@@ -36,6 +36,7 @@ Thumbs.db
 # Environment variables
 .env
 .cursor/
+.cursorindexingignore
 
 # Python
 __pycache__/
