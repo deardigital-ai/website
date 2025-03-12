@@ -1,34 +1,42 @@
 {
-  "name": "website",
+  "name": "github-mcp-server",
   "version": "1.0.0",
-  "description": "Repository for Dear Digital website with GitHub Actions",
-  "main": "index.js",
+  "description": "GitHub MCP Server for Cursor IDE",
+  "main": "src/index.js",
   "scripts": {
-    "test": "npm run test:workflow-content && npm run test:github-api",
-    "test:workflow-content": "node tests/workflow-content-tests.js",
-    "test:github-api": "node tests/github-api-tests.js",
-    "lint:workflows": "yamllint .github/workflows/*.yml",
-    "validate:workflows": "gh workflow run workflow-validation.yml",
-    "validate:commits": "gh workflow run commit-validation.yml"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/deardigital-ai/website.git"
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "jest",
+    "lint": "eslint src/**/*.js"
   },
   "keywords": [
-    "github-actions",
-    "automation",
-    "ai",
-    "discussions",
-    "issues"
+    "github",
+    "mcp",
+    "cursor",
+    "ide",
+    "api"
   ],
-  "author": "Dear Digital",
+  "author": "",
   "license": "MIT",
-  "bugs": {
-    "url": "https://github.com/deardigital-ai/website/issues"
+  "dependencies": {
+    "@octokit/rest": "^19.0.7",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "express-rate-limit": "^6.7.0",
+    "jsonwebtoken": "^9.0.0",
+    "morgan": "^1.10.0",
+    "node-cache": "^5.1.2",
+    "uuid": "^9.0.0",
+    "ws": "^8.13.0"
   },
-  "homepage": "https://github.com/deardigital-ai/website#readme",
   "devDependencies": {
-    "js-yaml": "^4.1.0"
+    "eslint": "^8.38.0",
+    "jest": "^29.5.0",
+    "nodemon": "^2.0.22"
+  },
+  "engines": {
+    "node": ">=14.0.0"
   }
 } 
