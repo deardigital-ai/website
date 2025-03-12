@@ -90,23 +90,26 @@ jobs:
             let allContent = discussionContent;
             if (eventName === 'discussion_comment') {
               const { repository } = context.payload;
-              const query = `
-                query($owner: String!, $repo: String!, $discussionNumber: Int!) {
-                  repository(owner: $owner, name: $repo) {
-                    discussion(number: $discussionNumber) {
-                      comments(first: 100) {
-                        nodes {
-                          author {
-                            login
+              
+              function createPreviousCommentsQuery() {
+                return `
+                  query($owner: String!, $repo: String!, $discussionNumber: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      discussion(number: $discussionNumber) {
+                        comments(first: 100) {
+                          nodes {
+                            author {
+                              login
+                            }
+                            body
+                            createdAt
                           }
-                          body
-                          createdAt
                         }
                       }
                     }
                   }
-                }
-              `;
+                `;
+              }
               
               const variables = {
                 owner: repository.owner.login,
@@ -115,7 +118,7 @@ jobs:
               };
               
               try {
-                const result = await github.graphql(query, variables);
+                const result = await github.graphql(createPreviousCommentsQuery(), variables);
                 const comments = result.repository.discussion.comments.nodes;
                 
                 // Log fetched comments
@@ -164,15 +167,26 @@ jobs:
           # Store the content in a file for processing
           echo "$CONTENT_TO_PROCESS" > input_content.txt
           
-          # IMPORTANT: Create a minimal payload with fixed content to avoid JSON issues
-          echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Please respond to this discussion: Hello, I'm interested in discussing this topic.\"}]}" > payload.json
+          # Create a JSON payload using jq for proper escaping
+          jq -n \
+            --arg model "deepseek-ai/DeepSeek-R1" \
+            --rawfile content input_content.txt \
+            '{
+              "model": $model,
+              "messages": [
+                {
+                  "role": "user", 
+                  "content": "Please respond to this discussion: " + $content
+                }
+              ]
+            }' > payload.json
           
           # Validate the JSON is well-formed
           jq '.' payload.json > /dev/null 2>&1
           if [ $? -ne 0 ]; then
             echo "- ⚠️ JSON validation failed, using emergency fallback" >> ${{ steps.init-log.outputs.log_file }}
             # Emergency fallback with minimal content
-            echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Test\"}]}" > payload.json
+            echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Please respond to this discussion: Hello, I'm interested in discussing this topic.\"}]}" > payload.json
           fi
           
           echo "- JSON payload created successfully" >> ${{ steps.init-log.outputs.log_file }}
@@ -313,15 +327,19 @@ jobs:
               // Add a comment with the AI response
               if (eventName === 'discussion') {
                 // Add a new comment to the discussion
-                const result = await github.graphql(`
-                  mutation($discussionId: ID!, $body: String!) {
-                    addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
-                      comment {
-                        id
+                function createDiscussionCommentMutation() {
+                  return `
+                    mutation($discussionId: ID!, $body: String!) {
+                      addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+                        comment {
+                          id
+                        }
                       }
                     }
-                  }
-                `, {
+                  `;
+                }
+                
+                const result = await github.graphql(createDiscussionCommentMutation(), {
                   discussionId: discussionId,
                   body: aiResponse
                 });
@@ -335,15 +353,20 @@ jobs:
                   // First try to reply directly to the comment
                   fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Attempting to reply directly to comment\n`);
                   
-                  const result = await github.graphql(`
-                    mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
-                      addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
-                        comment {
-                          id
+                  // Create GraphQL query using a function to avoid YAML parsing issues
+                  function createReplyMutation() {
+                    return `
+                      mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
+                        addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
+                          comment {
+                            id
+                          }
                         }
                       }
-                    }
-                  `, {
+                    `;
+                  }
+                  
+                  const result = await github.graphql(createReplyMutation(), {
                     discussionId: discussionId,
                     body: aiResponse,
                     replyToId: commentId
@@ -373,24 +396,26 @@ jobs:
                       );
                       
                       // First, get the discussion and all its comments and replies
-                      const commentQuery = `
-                        query($owner: String!, $repo: String!, $number: Int!) {
-                          repository(owner: $owner, name: $repo) {
-                            discussion(number: $number) {
-                              comments(first: 100) {
-                                nodes {
-                                  id
-                                  replies(first: 50) {
-                                    nodes {
-                                      id
+                      function createCommentsQuery() {
+                        return `
+                          query($owner: String!, $repo: String!, $number: Int!) {
+                            repository(owner: $owner, name: $repo) {
+                              discussion(number: $number) {
+                                comments(first: 100) {
+                                  nodes {
+                                    id
+                                    replies(first: 50) {
+                                      nodes {
+                                        id
+                                      }
                                     }
                                   }
                                 }
                               }
                             }
                           }
-                        }
-                      `;
+                        `;
+                      }
                       
                       const variables = {
                         owner: repository.owner.login,
@@ -402,7 +427,7 @@ jobs:
                         `- Querying discussion with variables: ${JSON.stringify(variables)}\n`
                       );
                       
-                      const discussionData = await github.graphql(commentQuery, variables);
+                      const discussionData = await github.graphql(createCommentsQuery(), variables);
                       
                       if (!discussionData || !discussionData.repository || !discussionData.repository.discussion) {
                         throw new Error("Failed to retrieve discussion data");
@@ -446,15 +471,19 @@ jobs:
                         );
                         
                         // Reply to the parent comment
-                        const parentResult = await github.graphql(`
-                          mutation($discussionId: ID!, $body: String!, $replyToId: ID!) {
-                            addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
-                              comment {
-                                id
+                        function createParentReplyMutation() {
+                          return `
+                            mutation($discussionId: ID!, $body: String!, $replyToId: ID!) {
+                              addDiscussionComment(input: {discussionId: $discussionId, body: $body, replyToId: $replyToId}) {
+                                comment {
+                                  id
+                                }
                               }
                             }
-                          }
-                        `, {
+                          `;
+                        }
+                        
+                        const parentResult = await github.graphql(createParentReplyMutation(), {
                           discussionId: discussionId,
                           body: aiResponse,
                           replyToId: parentCommentId
@@ -474,15 +503,19 @@ jobs:
                       );
                       
                       // Just post a new comment without specifying replyToId
-                      const fallbackResult = await github.graphql(`
-                        mutation($discussionId: ID!, $body: String!) {
-                          addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
-                            comment {
-                              id
+                      function createCommentMutation() {
+                        return `
+                          mutation($discussionId: ID!, $body: String!) {
+                            addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+                              comment {
+                                id
+                              }
                             }
                           }
-                        }
-                      `, {
+                        `;
+                      }
+                      
+                      const fallbackResult = await github.graphql(createCommentMutation(), {
                         discussionId: discussionId,
                         body: aiResponse
                       });
@@ -885,16 +918,20 @@ jobs:
               const logContent = fs.readFileSync('${{ steps.init-log.outputs.log_file }}', 'utf8');
               
               // Create a new discussion with the logs
-              const result = await github.graphql(`
-                mutation($input: CreateDiscussionInput!) {
-                  createDiscussion(input: $input) {
-                    discussion {
-                      id
-                      url
+              function createDiscussionMutation() {
+                return `
+                  mutation($input: CreateDiscussionInput!) {
+                    createDiscussion(input: $input) {
+                      discussion {
+                        id
+                        url
+                      }
                     }
                   }
-                }
-              `, {
+                `;
+              }
+              
+              const result = await github.graphql(createDiscussionMutation(), {
                 input: {
                   repositoryId: context.payload.repository.node_id,
                   categoryId: context.payload.repository.discussion_category_node_id || "DIC_kwDOLnNa0M4CT3wz", // Use a default if not available

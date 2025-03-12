@@ -102,13 +102,39 @@ jobs:
           echo "$ISSUE_CONTENT" > issue_content.txt
           
           # Create a safe JSON payload with a contextual prompt for analysis
-          echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"You are an expert developer assistant. Analyze this GitHub issue from the ${REPO_OWNER}/${REPO_NAME} repository and determine if it requires code changes. If so, describe what changes would be needed.\\n\\nIssue #${ISSUE_NUMBER}:\\n${ISSUE_CONTENT}\"}]}" > payload.json
+          # Use jq to properly escape the content
+          jq -n \
+            --arg model "deepseek-ai/DeepSeek-R1" \
+            --arg repo_owner "$REPO_OWNER" \
+            --arg repo_name "$REPO_NAME" \
+            --arg issue_number "$ISSUE_NUMBER" \
+            --rawfile content issue_content.txt \
+            '{
+              "model": $model,
+              "messages": [
+                {
+                  "role": "user", 
+                  "content": "You are an expert developer assistant. Analyze this GitHub issue from the " + $repo_owner + "/" + $repo_name + " repository and determine if it requires code changes. If so, describe what changes would be needed.\n\nIssue #" + $issue_number + ":\n" + $content
+                }
+              ]
+            }' > payload.json
           
           # Validate the JSON is well-formed
           jq '.' payload.json > /dev/null 2>&1
           if [ $? -ne 0 ]; then
             echo "- ⚠️ JSON validation failed, using emergency fallback" >> ${{ steps.init-log.outputs.log_file }}
-            echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Analyze this GitHub issue and determine if code changes are required.\"}]}" > payload.json
+            # Simplified fallback
+            jq -n \
+              --arg model "deepseek-ai/DeepSeek-R1" \
+              '{
+                "model": $model,
+                "messages": [
+                  {
+                    "role": "user", 
+                    "content": "Analyze this GitHub issue and determine if code changes are required."
+                  }
+                ]
+              }' > payload.json
           fi
           
           echo "- Analysis payload created successfully" >> ${{ steps.init-log.outputs.log_file }}
@@ -176,7 +202,18 @@ jobs:
               # If this is the last retry and we're still failing, try a simplified payload
               if [[ $RETRY_COUNT -eq $(($MAX_RETRIES-1)) ]]; then
                 echo "- 🔄 Final attempt with simplified payload" >> ${{ steps.init-log.outputs.log_file }}
-                echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Analyze this issue: ${{ steps.get-issue.outputs.issue_title }}\"}]}" > payload.json
+                jq -n \
+                  --arg model "deepseek-ai/DeepSeek-R1" \
+                  --arg title "${{ steps.get-issue.outputs.issue_title }}" \
+                  '{
+                    "model": $model,
+                    "messages": [
+                      {
+                        "role": "user", 
+                        "content": "Analyze this issue: " + $title
+                      }
+                    ]
+                  }' > payload.json
               fi
             fi
             
@@ -249,14 +286,38 @@ jobs:
           echo "- Creating detailed prompt for fix recommendations" >> ${{ steps.init-log.outputs.log_file }}
           
           # Create a JSON payload for the detailed fix recommendation
-          echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"You are an expert developer assistant helping fix issues in the ${REPO_NAME} repository. Based on the following issue and initial analysis, provide detailed fix recommendations with code examples.\\n\\nISSUE:\\n${ISSUE_CONTENT}\\n\\nINITIAL ANALYSIS:\\n${INITIAL_ANALYSIS}\\n\\nProvide a detailed fix plan with code examples. Format your response with these sections:\\n1. Problem Summary\\n2. Proposed Fix (with code examples)\\n3. Testing Recommendations\\n4. Implementation Plan\"}]}" > fix_payload.json
+          # Use jq to properly escape the content
+          jq -n \
+            --arg model "deepseek-ai/DeepSeek-R1" \
+            --arg repo_name "$REPO_NAME" \
+            --arg issue_content "$ISSUE_CONTENT" \
+            --arg initial_analysis "$INITIAL_ANALYSIS" \
+            '{
+              "model": $model,
+              "messages": [
+                {
+                  "role": "user", 
+                  "content": "You are an expert developer assistant helping fix issues in the " + $repo_name + " repository. Based on the following issue and initial analysis, provide detailed fix recommendations with code examples.\n\nISSUE:\n" + $issue_content + "\n\nINITIAL ANALYSIS:\n" + $initial_analysis + "\n\nProvide a detailed fix plan with code examples. Format your response with these sections:\n1. Problem Summary\n2. Proposed Fix (with code examples)\n3. Testing Recommendations\n4. Implementation Plan"
+                }
+              ]
+            }' > fix_payload.json
           
           # Validate the JSON is well-formed
           jq '.' fix_payload.json > /dev/null 2>&1
           if [ $? -ne 0 ]; then
             echo "- ⚠️ JSON validation failed for fix recommendation" >> ${{ steps.init-log.outputs.log_file }}
             # Simplified fallback
-            echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Provide code fix recommendations for this issue.\"}]}" > fix_payload.json
+            jq -n \
+              --arg model "deepseek-ai/DeepSeek-R1" \
+              '{
+                "model": $model,
+                "messages": [
+                  {
+                    "role": "user", 
+                    "content": "Provide code fix recommendations for this issue."
+                  }
+                ]
+              }' > fix_payload.json
           fi
           
           echo "- Fix recommendation payload created" >> ${{ steps.init-log.outputs.log_file }}
@@ -374,7 +435,8 @@ jobs:
             );
             
             const issueNumber = ${{ steps.get-issue.outputs.issue_number }};
-            const fixRecommendation = `${{ steps.prepare-fix.outputs.fix_recommendation }}`;
+            const issueUrl = context.payload.issue.html_url;
+            const fixRecommendation = fs.readFileSync('fix_recommendation.txt', 'utf8');
             const defaultBranch = '${{ steps.get-issue.outputs.default_branch }}';
             
             try {
@@ -391,33 +453,43 @@ jobs:
               execSync(`git fetch origin ${defaultBranch}`);
               execSync(`git checkout -b ${branchName} origin/${defaultBranch}`);
               
-              // For now, we'll just create a markdown file with the fix recommendation
-              // In a more advanced version, you could parse the recommendation and apply actual code changes
-              const fixFilePath = `docs/fixes/fix-for-issue-${issueNumber}.md`;
-              
-              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Creating fix documentation: ${fixFilePath}\n`);
-              
-              // Create directories if they don't exist
+              // Create a fixes directory if it doesn't exist
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Creating fix documentation\n`);
               execSync('mkdir -p docs/fixes');
               
-              // Create the fix markdown file
-              const fixFileContent = `# Fix for Issue #${issueNumber}
+              // Create the fix markdown file using proper JavaScript construction
+              const fixFilePath = `docs/fixes/fix-for-issue-${issueNumber}.md`;
               
-## Automatically Generated Fix Recommendation
-
-This fix was automatically generated by the Issue Assistant.
-
-## Issue Link
-[Issue #${issueNumber}](${{ github.event.issue.html_url }})
-
-## Fix Recommendation
-
-${fixRecommendation}
-
----
-Generated at: ${new Date().toISOString()}
-`;
+              // Use a function to create the content to avoid YAML parsing issues
+              function createFixMarkdown(issueNum, issueLink, recommendation, timestamp) {
+                return [
+                  `# Fix for Issue #${issueNum}`,
+                  '',
+                  '## Automatically Generated Fix Recommendation',
+                  '',
+                  'This fix was automatically generated by the Issue Assistant.',
+                  '',
+                  '## Issue Link',
+                  `[Issue #${issueNum}](${issueLink})`,
+                  '',
+                  '## Fix Recommendation',
+                  '',
+                  recommendation,
+                  '',
+                  '---',
+                  `Generated at: ${timestamp}`
+                ].join('\n');
+              }
               
+              // Generate markdown content
+              const fixFileContent = createFixMarkdown(
+                issueNumber,
+                issueUrl,
+                fixRecommendation,
+                new Date().toISOString()
+              );
+              
+              // Write the file using Node.js fs
               fs.writeFileSync(fixFilePath, fixFileContent);
               
               // Commit the changes
@@ -431,21 +503,35 @@ Generated at: ${new Date().toISOString()}
               // Create a PR
               fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Creating pull request\n`);
               
+              // Prepare PR content (truncate if too long)
+              const truncatedRecommendation = fixRecommendation.length > 1500 
+                ? fixRecommendation.substring(0, 1500) + "...(truncated)" 
+                : fixRecommendation;
+              
+              // Create PR body using the same approach
+              function createPrBody(issueNum, recommendation) {
+                return [
+                  `This PR contains an automatically generated fix recommendation for issue #${issueNum}.`,
+                  '',
+                  '## Fix Details',
+                  '',
+                  recommendation,
+                  '',
+                  '## Note',
+                  'This PR was automatically created by the Issue Assistant.',
+                  'Please review the changes and modify as needed.',
+                  '',
+                  `Closes #${issueNum}`
+                ].join('\n');
+              }
+              
+              const prBody = createPrBody(issueNumber, truncatedRecommendation);
+              
               const { data: pullRequest } = await github.rest.pulls.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 title: `Fix for issue #${issueNumber}`,
-                body: `This PR contains an automatically generated fix recommendation for issue #${issueNumber}.
-                
-## Fix Details
-
-${fixRecommendation.substring(0, 1500)}${fixRecommendation.length > 1500 ? '...(truncated)' : ''}
-
-## Note
-This PR was automatically created by the Issue Assistant.
-Please review the changes and modify as needed.
-
-Closes #${issueNumber}`,
+                body: prBody,
                 head: branchName,
                 base: defaultBranch
               });
@@ -455,16 +541,24 @@ Closes #${issueNumber}`,
                 `- PR URL: ${pullRequest.html_url}\n\n`
               );
               
-              // Comment on the issue
+              // Comment on the issue using a function to construct the comment
+              function createIssueComment(prNumber, prUrl) {
+                return [
+                  `I've created PR #${prNumber} with a proposed fix for this issue.`,
+                  '',
+                  'The PR includes a markdown file with detailed fix recommendations. Please review and implement the suggested changes, or modify the PR as needed.',
+                  '',
+                  `[View PR #${prNumber}](${prUrl})`
+                ].join('\n');
+              }
+              
+              const commentBody = createIssueComment(pullRequest.number, pullRequest.html_url);
+              
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issueNumber,
-                body: `I've created PR #${pullRequest.number} with a proposed fix for this issue.
-                
-The PR includes a markdown file with detailed fix recommendations. Please review and implement the suggested changes, or modify the PR as needed.
-
-[View PR #${pullRequest.number}](${pullRequest.html_url})`
+                body: commentBody
               });
               
               return {
@@ -477,20 +571,26 @@ The PR includes a markdown file with detailed fix recommendations. Please review
               );
               
               // Comment on the issue about the failure
+              function createErrorComment(errorMessage) {
+                return [
+                  'I attempted to create a PR with a fix recommendation, but encountered an error:',
+                  '',
+                  '```',
+                  errorMessage,
+                  '```',
+                  '',
+                  'Please check the workflow logs for more details.'
+                ].join('\n');
+              }
+              
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issueNumber,
-                body: `I attempted to create a PR with a fix recommendation, but encountered an error: 
-                
-\`\`\`
-${error.message}
-\`\`\`
-
-Please check the workflow logs for more details.`
+                body: createErrorComment(error.message)
               });
               
-              core.setFailed(`Error creating PR: ${error.message}`);
+              core.setFailed('Error creating PR: ' + error.message);
               return null;
             }
       
@@ -508,38 +608,47 @@ Please check the workflow logs for more details.`
             );
             
             const issueNumber = ${{ steps.get-issue.outputs.issue_number }};
-            const analysis = `${{ steps.issue-analysis.outputs.analysis }}`;
+            const analysis = '${{ steps.issue-analysis.outputs.analysis }}';
             const needsChanges = '${{ steps.issue-analysis.outputs.needs_changes }}';
             
             try {
+              // Create comment body functions to avoid YAML parsing issues with markdown
+              function createNoChangesComment(analysisText) {
+                return [
+                  'Based on my analysis, this issue doesn\'t require code changes:',
+                  '',
+                  '---',
+                  '',
+                  analysisText,
+                  '',
+                  '---',
+                  '',
+                  'If you agree with this assessment, this issue can be closed. If you believe code changes are still needed, please provide additional details.'
+                ].join('\n');
+              }
+              
+              function createNeedsReviewComment(analysisText) {
+                return [
+                  'I\'ve analyzed this issue and here are my findings:',
+                  '',
+                  '---',
+                  '',
+                  analysisText,
+                  '',
+                  '---',
+                  '',
+                  'I wasn\'t able to automatically generate a specific fix recommendation. This issue likely requires additional input or manual review by a developer.'
+                ].join('\n');
+              }
+              
               let commentBody = '';
               
               if (needsChanges === 'false') {
                 // No code changes needed - suggest closing
-                commentBody = `Based on my analysis, this issue doesn't require code changes:
-                
----
-
-${analysis}
-
----
-
-If you agree with this assessment, this issue can be closed. If you believe code changes are still needed, please provide additional details.`;
-                
-                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Suggesting to close the issue\n`);
+                commentBody = createNoChangesComment(analysis);
               } else {
                 // Either needs changes but couldn't generate a fix, or analysis was inconclusive
-                commentBody = `I've analyzed this issue and here are my findings:
-                
----
-
-${analysis}
-
----
-
-I wasn't able to automatically generate a specific fix recommendation. This issue likely requires additional input or manual review by a developer.`;
-                
-                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Requesting developer review\n`);
+                commentBody = createNeedsReviewComment(analysis);
               }
               
               // Post the comment
@@ -592,21 +701,25 @@ I wasn't able to automatically generate a specific fix recommendation. This issu
               const logContent = fs.readFileSync('${{ steps.init-log.outputs.log_file }}', 'utf8');
               
               // Create a new discussion with the logs
-              const result = await github.graphql(`
-                mutation($input: CreateDiscussionInput!) {
-                  createDiscussion(input: $input) {
-                    discussion {
-                      id
-                      url
+              function createDiscussionMutation() {
+                return `
+                  mutation($input: CreateDiscussionInput!) {
+                    createDiscussion(input: $input) {
+                      discussion {
+                        id
+                        url
+                      }
                     }
                   }
-                }
-              `, {
+                `;
+              }
+              
+              const result = await github.graphql(createDiscussionMutation(), {
                 input: {
                   repositoryId: context.payload.repository.node_id,
                   categoryId: context.payload.repository.discussion_category_node_id || "DIC_kwDOLnNa0M4CT3wz", // Use a default if not available
                   body: logContent,
-                  title: `Issue Assistant Log: Issue #${{ steps.get-issue.outputs.issue_number }} - ${new Date().toISOString().split('T')[0]}`
+                  title: `Analysis of workflow #${{ github.run_number }} - ${new Date().toISOString().split('T')[0]}`
                 }
               });
               

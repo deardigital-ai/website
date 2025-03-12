@@ -1,0 +1,34 @@
+{
+  "name": "website",
+  "version": "1.0.0",
+  "description": "Repository for Dear Digital website with GitHub Actions",
+  "main": "index.js",
+  "scripts": {
+    "test": "npm run test:workflow-content && npm run test:github-api",
+    "test:workflow-content": "node tests/workflow-content-tests.js",
+    "test:github-api": "node tests/github-api-tests.js",
+    "lint:workflows": "yamllint .github/workflows/*.yml",
+    "validate:workflows": "gh workflow run workflow-validation.yml",
+    "validate:commits": "gh workflow run commit-validation.yml"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deardigital-ai/website.git"
+  },
+  "keywords": [
+    "github-actions",
+    "automation",
+    "ai",
+    "discussions",
+    "issues"
+  ],
+  "author": "Dear Digital",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/deardigital-ai/website/issues"
+  },
+  "homepage": "https://github.com/deardigital-ai/website#readme",
+  "devDependencies": {
+    "js-yaml": "^4.1.0"
+  }
+} 
