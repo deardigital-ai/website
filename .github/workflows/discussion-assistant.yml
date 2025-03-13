@@ -6,11 +6,46 @@ on:
   discussion_comment:
     types: [created, edited]
 
+# Adding explicit permission scoping for security
+permissions:
+  contents: read
+  discussions: write
+  actions: read
+
 jobs:
   respond-to-discussion:
     runs-on: self-hosted
     
     steps:
+      - name: Validate event inputs
+        id: validate-inputs
+        run: |
+          # Validate the event type is supported
+          if [[ "${{ github.event_name }}" != "discussion" && "${{ github.event_name }}" != "discussion_comment" ]]; then
+            echo "::error::Unsupported event type: ${{ github.event_name }}"
+            exit 1
+          fi
+          
+          # For discussion events, validate we have a discussion object
+          if [[ "${{ github.event_name }}" == "discussion" && "${{ toJson(github.event.discussion) }}" == "" ]]; then
+            echo "::error::Missing discussion data in event payload"
+            exit 1
+          fi
+          
+          # For comment events, validate we have both discussion and comment objects
+          if [[ "${{ github.event_name }}" == "discussion_comment" ]]; then
+            if [[ "${{ toJson(github.event.discussion) }}" == "" ]]; then
+              echo "::error::Missing discussion data in comment event payload"
+              exit 1
+            fi
+            if [[ "${{ toJson(github.event.comment) }}" == "" ]]; then
+              echo "::error::Missing comment data in event payload"
+              exit 1
+            fi
+          fi
+          
+          echo "Input validation passed"
+      
       - name: Initialize workflow log
         id: init-log
         run: |
@@ -30,12 +65,12 @@ jobs:
           echo "log_file=workflow_debug.log" >> $GITHUB_OUTPUT
       
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '16'
+          node-version: '20'
       
       - name: Log setup steps
         run: |
