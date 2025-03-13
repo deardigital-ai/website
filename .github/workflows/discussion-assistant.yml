@@ -262,14 +262,15 @@ jobs:
           # Start timer
           START_TIME=$(date +%s)
           
+          # Create response directory
+          mkdir -p response_files
+          
           # Add retry logic for API calls
           MAX_RETRIES=3
           RETRY_COUNT=0
           SUCCESS=false
           
-          # Create a response directory
-          mkdir -p response_files
-          
+          # Main API calling loop
           while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
             if [ $RETRY_COUNT -gt 0 ]; then
               echo "- 🔄 Retry attempt $RETRY_COUNT..." >> ${{ steps.init-log.outputs.log_file }}
@@ -314,100 +315,36 @@ jobs:
                 PAYLOAD_FILE="content_files/emergency_payload.json"
               fi
             else
-              # Validate the response content with Node.js for safer parsing
-              cat > validate-response.js << 'EOF'
-              const fs = require('fs');
+              # Validate response using jq instead of Node.js
+              echo "- Validating response with jq..." >> ${{ steps.init-log.outputs.log_file }}
               
-              // Arguments
-              const responseFile = process.argv[2];
-              const logFile = process.argv[3];
+              # Check if jq is available
+              if ! command -v jq &> /dev/null; then
+                echo "- ⚠️ jq not available, installing..." >> ${{ steps.init-log.outputs.log_file }}
+                apt-get update && apt-get install -y jq || brew install jq || true
+              fi
               
-              // Log functions
-              function log(message) {
-                fs.appendFileSync(logFile, message + '\n');
-              }
-              
-              try {
-                log(`- Validating response file: ${responseFile}`);
+              # Use jq to check if the response is valid and has the expected structure
+              if jq -e '.choices | length > 0 and .[0].message.content' "$RESPONSE_FILE" > /dev/null 2>&1; then
+                # Extract the content with jq and save to a file
+                jq -r '.choices[0].message.content' "$RESPONSE_FILE" > response_files/content.txt
+                CONTENT_SIZE=$(wc -c < response_files/content.txt)
                 
-                // Read the response file
-                const responseContent = fs.readFileSync(responseFile, 'utf8');
-                
-                // Try to parse as JSON
-                let response;
-                try {
-                  response = JSON.parse(responseContent);
-                  log('- Response is valid JSON');
-                } catch (parseError) {
-                  log(`- ❌ Response is not valid JSON: ${parseError.message}`);
-                  process.exit(1);
-                }
-                
-                // Check for error field
-                if (response.error) {
-                  log(`- ❌ API error: ${response.error.message || JSON.stringify(response.error)}`);
-                  process.exit(1);
-                }
-                
-                // Check for choices field
-                if (!response.choices) {
-                  log('- ❌ Response is missing choices field');
-                  process.exit(1);
-                }
-                
-                // Check if choices is an array
-                if (!Array.isArray(response.choices)) {
-                  log(`- ❌ Choices is not an array, it's a ${typeof response.choices}`);
-                  process.exit(1);
-                }
-                
-                // Check if choices has elements
-                if (response.choices.length === 0) {
-                  log('- ❌ Choices array is empty');
-                  process.exit(1);
-                }
-                
-                // Check for message and content in the first choice
-                const firstChoice = response.choices[0];
-                if (!firstChoice.message) {
-                  log('- ❌ First choice is missing message field');
-                  process.exit(1);
-                }
-                
-                if (!firstChoice.message.content) {
-                  log('- ❌ Message is missing content field');
-                  process.exit(1);
-                }
-                
-                // Extract the content
-                const content = firstChoice.message.content;
-                log(`- ✅ Successfully extracted content (${content.length} bytes)`);
-                log(`- Content preview: ${content.substring(0, 100)}...`);
-                
-                // Write the content to a separate file
-                fs.writeFileSync('response_files/content.txt', content);
-                
-                // Success - write status file for the shell script
-                fs.writeFileSync('response_files/validation_success', 'true');
-                
-                console.log('Validation successful');
-                process.exit(0);
-              } catch (error) {
-                log(`- ❌ Error validating response: ${error.message}`);
-                console.error('Error validating response:', error);
-                process.exit(1);
-              }
-              EOF
-              
-              # Run the validation script
-              node validate-response.js "$RESPONSE_FILE" "${{ steps.init-log.outputs.log_file }}"
-              
-              # Check if validation was successful
-              if [ -f "response_files/validation_success" ]; then
                 SUCCESS=true
-                echo "- ✅ Response validation successful" >> ${{ steps.init-log.outputs.log_file }}
+                echo "- ✅ Response validated successfully: content extracted (${CONTENT_SIZE} bytes)" >> ${{ steps.init-log.outputs.log_file }}
+                echo "true" > "response_files/validation_success"
               else
-                echo "- ❌ Response validation failed" >> ${{ steps.init-log.outputs.log_file }}
+                # Check for specific error conditions
+                if jq -e '.error' "$RESPONSE_FILE" > /dev/null 2>&1; then
+                  ERROR_MSG=$(jq -r '.error.message // "Unknown API error"' "$RESPONSE_FILE")
+                  echo "- ❌ API returned error: ${ERROR_MSG}" >> ${{ steps.init-log.outputs.log_file }}
+                elif ! jq -e '.choices' "$RESPONSE_FILE" > /dev/null 2>&1; then
+                  echo "- ❌ Response missing choices field" >> ${{ steps.init-log.outputs.log_file }}
+                elif [ "$(jq '.choices | length' "$RESPONSE_FILE")" -eq "0" ]; then
+                  echo "- ❌ Choices array is empty" >> ${{ steps.init-log.outputs.log_file }}
+                else
+                  echo "- ❌ Response validation failed: missing content or invalid structure" >> ${{ steps.init-log.outputs.log_file }}
+                fi
               fi
             fi
             
