@@ -37,27 +37,27 @@ jobs:
           fi
           
           # Add diagnostics info to log
-          echo "### System Information" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "- OS: $OSTYPE" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "- Shell: $SHELL" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "- Path: $PATH" >> "${{ steps.init-log.outputs.log_file }}"
+          echo "### System Information" >> workflow_debug.log
+          echo "- OS: $OSTYPE" >> workflow_debug.log
+          echo "- Shell: $SHELL" >> workflow_debug.log
+          echo "- Path: $PATH" >> workflow_debug.log
           if command -v node &> /dev/null; then
-            echo "- Node version: $(node --version)" >> "${{ steps.init-log.outputs.log_file }}"
+            echo "- Node version: $(node --version)" >> workflow_debug.log
           fi
           if command -v jq &> /dev/null; then
-            echo "- jq version: $(jq --version)" >> "${{ steps.init-log.outputs.log_file }}"
+            echo "- jq version: $(jq --version)" >> workflow_debug.log
           fi
           if command -v curl &> /dev/null; then
-            echo "- curl version: $(curl --version | head -n 1)" >> "${{ steps.init-log.outputs.log_file }}"
+            echo "- curl version: $(curl --version | head -n 1)" >> workflow_debug.log
           fi
-          echo "" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "### Event Information" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "- GitHub Event Name: ${{ github.event_name }}" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "- GitHub Action: ${{ github.action }}" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "- GitHub Actor: ${{ github.actor }}" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "- GitHub SHA: ${{ github.sha }}" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "- GitHub Ref: ${{ github.ref }}" >> "${{ steps.init-log.outputs.log_file }}"
-          echo "" >> "${{ steps.init-log.outputs.log_file }}"
+          echo "" >> workflow_debug.log
+          echo "### Event Information" >> workflow_debug.log
+          echo "- GitHub Event Name: ${{ github.event_name }}" >> workflow_debug.log
+          echo "- GitHub Action: ${{ github.action }}" >> workflow_debug.log
+          echo "- GitHub Actor: ${{ github.actor }}" >> workflow_debug.log
+          echo "- GitHub SHA: ${{ github.sha }}" >> workflow_debug.log
+          echo "- GitHub Ref: ${{ github.ref }}" >> workflow_debug.log
+          echo "" >> workflow_debug.log
           
           # Validate the event type is supported
           if [[ "${{ github.event_name }}" != "discussion" && "${{ github.event_name }}" != "discussion_comment" ]]; then
@@ -65,38 +65,27 @@ jobs:
             exit 1
           fi
           
-          # Create payload directory for safer handling of JSON data
-          mkdir -p payload_data
-          
           # For discussion events, validate we have a discussion object
+          # Using jq to check if discussion exists rather than direct string comparison
           if [[ "${{ github.event_name }}" == "discussion" ]]; then
-            # Write the discussion JSON to a file first for safer handling
-            echo '${{ toJson(github.event.discussion) }}' > payload_data/discussion.json
-            
-            # Check if the JSON is valid and not empty
-            if ! jq -e . payload_data/discussion.json > /dev/null 2>&1 || [[ "$(jq -r 'if . == null or . == {} then "empty" else "exists" end' payload_data/discussion.json)" == "empty" ]]; then
-              echo "::error::Missing or invalid discussion data in event payload"
+            DISCUSSION_JSON='${{ toJson(github.event.discussion) }}'
+            if [[ "$(echo "$DISCUSSION_JSON" | jq -r 'if . == null or . == "" or . == {} then "empty" else "exists" end')" == "empty" ]]; then
+              echo "::error::Missing discussion data in event payload"
               exit 1
             fi
           fi
           
           # For comment events, validate we have both discussion and comment objects
           if [[ "${{ github.event_name }}" == "discussion_comment" ]]; then
-            # Write the discussion JSON to a file first for safer handling
-            echo '${{ toJson(github.event.discussion) }}' > payload_data/discussion.json
-            
-            # Check if the JSON is valid and not empty
-            if ! jq -e . payload_data/discussion.json > /dev/null 2>&1 || [[ "$(jq -r 'if . == null or . == {} then "empty" else "exists" end' payload_data/discussion.json)" == "empty" ]]; then
-              echo "::error::Missing or invalid discussion data in comment event payload"
+            DISCUSSION_JSON='${{ toJson(github.event.discussion) }}'
+            if [[ "$(echo "$DISCUSSION_JSON" | jq -r 'if . == null or . == "" or . == {} then "empty" else "exists" end')" == "empty" ]]; then
+              echo "::error::Missing discussion data in comment event payload"
               exit 1
             fi
             
-            # Write the comment JSON to a file first for safer handling
-            echo '${{ toJson(github.event.comment) }}' > payload_data/comment.json
-            
-            # Check if the JSON is valid and not empty
-            if ! jq -e . payload_data/comment.json > /dev/null 2>&1 || [[ "$(jq -r 'if . == null or . == {} then "empty" else "exists" end' payload_data/comment.json)" == "empty" ]]; then
-              echo "::error::Missing or invalid comment data in event payload"
+            COMMENT_JSON='${{ toJson(github.event.comment) }}'
+            if [[ "$(echo "$COMMENT_JSON" | jq -r 'if . == null or . == "" or . == {} then "empty" else "exists" end')" == "empty" ]]; then
+              echo "::error::Missing comment data in event payload"
               exit 1
             fi
           fi
@@ -107,21 +96,19 @@ jobs:
         id: init-log
         run: |
           # Create a log file with initial details
-          mkdir -p workflow_logs
-          LOG_FILE="workflow_logs/workflow_debug_$(date +%s).log"
-          echo "# Workflow Execution Log - $(date)" > "$LOG_FILE"
-          echo "## Run ID: ${{ github.run_id }}" >> "$LOG_FILE"
-          echo "## Event: ${{ github.event_name }}" >> "$LOG_FILE"
-          echo "## Repository: ${{ github.repository }}" >> "$LOG_FILE"
-          echo "## Workflow: ${{ github.workflow }}" >> "$LOG_FILE"
-          echo "## Run Number: ${{ github.run_number }}" >> "$LOG_FILE"
-          echo "## Actor: ${{ github.actor }}" >> "$LOG_FILE"
-          echo "## Start Time: $(date)" >> "$LOG_FILE"
-          echo "" >> "$LOG_FILE"
-          echo "## Step Logs:" >> "$LOG_FILE"
+          echo "# Workflow Execution Log - $(date)" > workflow_debug.log
+          echo "## Run ID: ${{ github.run_id }}" >> workflow_debug.log
+          echo "## Event: ${{ github.event_name }}" >> workflow_debug.log
+          echo "## Repository: ${{ github.repository }}" >> workflow_debug.log
+          echo "## Workflow: ${{ github.workflow }}" >> workflow_debug.log
+          echo "## Run Number: ${{ github.run_number }}" >> workflow_debug.log
+          echo "## Actor: ${{ github.actor }}" >> workflow_debug.log
+          echo "## Start Time: $(date)" >> workflow_debug.log
+          echo "" >> workflow_debug.log
+          echo "## Step Logs:" >> workflow_debug.log
           
           # Make the log file available to all steps
-          echo "log_file=$LOG_FILE" >> $GITHUB_OUTPUT
+          echo "log_file=workflow_debug.log" >> $GITHUB_OUTPUT
       
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -1570,16 +1557,11 @@ jobs:
 
             try {
               const fs = require('fs');
-              const logFilePath = '${{ steps.init-log.outputs.log_file }}' || 'workflow_logs/workflow_debug_fallback.log';
+              const logFilePath = '${{ steps.init-log.outputs.log_file }}';
               
               // Check if log file exists and is readable
               if (!fs.existsSync(logFilePath)) {
                 console.log(`Log file ${logFilePath} does not exist, creating minimal log`);
-                // Create directory if it doesn't exist
-                const dir = logFilePath.substring(0, logFilePath.lastIndexOf('/'));
-                if (dir && !fs.existsSync(dir)) {
-                  fs.mkdirSync(dir, { recursive: true });
-                }
                 fs.writeFileSync(logFilePath, `# Workflow Execution Log - ${new Date().toISOString()}\n\n## Summary\nWorkflow ID: ${{ github.run_id }}\nFailed with error in validation step.\n`);
               }
               
@@ -1665,15 +1647,14 @@ jobs:
               // If we can't create a discussion through GraphQL, create an issue instead
               try {
                 const fs = require('fs');
-                const logFilePath = '${{ steps.init-log.outputs.log_file }}' || 'workflow_logs/workflow_debug_fallback.log';
+                const logFilePath = '${{ steps.init-log.outputs.log_file }}';
                 
                 // Check if log file exists
                 let logContent = '';
                 if (fs.existsSync(logFilePath)) {
                   logContent = fs.readFileSync(logFilePath, 'utf8');
                 } else {
-                  // Create a basic log as fallback
-                  logContent = `# Workflow Log\n\nFailed to read workflow log file.\nRun ID: ${{ github.run_id }}\nFailed in validation step.\nError: ${error.message}`;
+                  logContent = `# Workflow Log\n\nFailed to read workflow log file.\nRun ID: ${{ github.run_id }}\nFailed in validation step.`;
                 }
                 
                 const { data: issue } = await github.rest.issues.create({
