@@ -20,6 +20,21 @@ jobs:
       - name: Validate event inputs
         id: validate-inputs
         run: |
+          # Check if jq is installed and install if not
+          if ! command -v jq &> /dev/null; then
+            echo "jq not found, installing..."
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+              # macOS
+              brew install jq || (echo "::warning::Failed to install jq via brew, workflow may fail" && exit 1)
+            elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+              # Linux
+              sudo apt-get update && sudo apt-get install -y jq || (echo "::warning::Failed to install jq via apt, workflow may fail" && exit 1)
+            else
+              echo "::error::Unsupported OS for jq installation: $OSTYPE"
+              exit 1
+            fi
+          fi
+          
           # Validate the event type is supported
           if [[ "${{ github.event_name }}" != "discussion" && "${{ github.event_name }}" != "discussion_comment" ]]; then
             echo "::error::Unsupported event type: ${{ github.event_name }}"
@@ -27,18 +42,25 @@ jobs:
           fi
           
           # For discussion events, validate we have a discussion object
-          if [[ "${{ github.event_name }}" == "discussion" && "${{ toJson(github.event.discussion) }}" == "" ]]; then
-            echo "::error::Missing discussion data in event payload"
-            exit 1
+          # Using jq to check if discussion exists rather than direct string comparison
+          if [[ "${{ github.event_name }}" == "discussion" ]]; then
+            DISCUSSION_JSON='${{ toJson(github.event.discussion) }}'
+            if [[ "$(echo "$DISCUSSION_JSON" | jq -r 'if . == null or . == "" or . == {} then "empty" else "exists" end')" == "empty" ]]; then
+              echo "::error::Missing discussion data in event payload"
+              exit 1
+            fi
           fi
           
           # For comment events, validate we have both discussion and comment objects
           if [[ "${{ github.event_name }}" == "discussion_comment" ]]; then
-            if [[ "${{ toJson(github.event.discussion) }}" == "" ]]; then
+            DISCUSSION_JSON='${{ toJson(github.event.discussion) }}'
+            if [[ "$(echo "$DISCUSSION_JSON" | jq -r 'if . == null or . == "" or . == {} then "empty" else "exists" end')" == "empty" ]]; then
               echo "::error::Missing discussion data in comment event payload"
               exit 1
             fi
-            if [[ "${{ toJson(github.event.comment) }}" == "" ]]; then
+            
+            COMMENT_JSON='${{ toJson(github.event.comment) }}'
+            if [[ "$(echo "$COMMENT_JSON" | jq -r 'if . == null or . == "" or . == {} then "empty" else "exists" end')" == "empty" ]]; then
               echo "::error::Missing comment data in event payload"
               exit 1
             fi
@@ -1181,20 +1203,26 @@ jobs:
               return null;
             }
       
-      - name: Create workflow log discussion
-        id: create-log-discussion
-        if: always()  # Run even if previous steps failed
+      - name: Create workflow log
+        if: always()
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            
+
             try {
               const fs = require('fs');
+              const logFilePath = '${{ steps.init-log.outputs.log_file }}';
+              
+              // Check if log file exists and is readable
+              if (!fs.existsSync(logFilePath)) {
+                console.log(`Log file ${logFilePath} does not exist, creating minimal log`);
+                fs.writeFileSync(logFilePath, `# Workflow Execution Log - ${new Date().toISOString()}\n\n## Summary\nWorkflow ID: ${{ github.run_id }}\nFailed with error in validation step.\n`);
+              }
               
               // Append final execution stats
-              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+              fs.appendFileSync(logFilePath, 
                 `\n## Workflow Execution Summary\n` +
                 `- End Time: ${new Date().toISOString()}\n` +
                 `- Run URL: https://github.com/${owner}/${repo}/actions/runs/${{ github.run_id }}\n` +
@@ -1202,7 +1230,7 @@ jobs:
               );
               
               // Read the complete log file
-              const logContent = fs.readFileSync('${{ steps.init-log.outputs.log_file }}', 'utf8');
+              const logContent = fs.readFileSync(logFilePath, 'utf8');
               
               // Get available discussion categories
               console.log('Fetching available discussion categories');
@@ -1275,7 +1303,15 @@ jobs:
               // If we can't create a discussion through GraphQL, create an issue instead
               try {
                 const fs = require('fs');
-                const logContent = fs.readFileSync('${{ steps.init-log.outputs.log_file }}', 'utf8');
+                const logFilePath = '${{ steps.init-log.outputs.log_file }}';
+                
+                // Check if log file exists
+                let logContent = '';
+                if (fs.existsSync(logFilePath)) {
+                  logContent = fs.readFileSync(logFilePath, 'utf8');
+                } else {
+                  logContent = `# Workflow Log\n\nFailed to read workflow log file.\nRun ID: ${{ github.run_id }}\nFailed in validation step.`;
+                }
                 
                 const { data: issue } = await github.rest.issues.create({
                   owner,
