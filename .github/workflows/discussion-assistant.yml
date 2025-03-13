@@ -11,6 +11,7 @@ permissions:
   contents: read
   discussions: write
   actions: read
+  issues: write
 
 jobs:
   respond-to-discussion:
