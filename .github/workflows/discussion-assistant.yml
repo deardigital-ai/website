@@ -55,13 +55,20 @@ jobs:
             let discussionId = '';
             let commentId = null;
             
+            console.log('EVENT NAME:', eventName);
+            console.log('EVENT PAYLOAD:', JSON.stringify(context.payload, null, 2).substring(0, 1000) + '...');
+            
+            const fs = require('fs');
+            
+            // Create a directory for content files
+            fs.mkdirSync('content_files', { recursive: true });
+            
             if (eventName === 'discussion') {
               const discussion = context.payload.discussion;
               discussionContent = discussion.title + '\n\n' + discussion.body;
               discussionId = discussion.node_id;
               
               // Log discussion details
-              const fs = require('fs');
               fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
                 `### Retrieved Discussion at ${new Date().toISOString()}\n` +
                 `- Title: ${discussion.title}\n` +
@@ -76,13 +83,13 @@ jobs:
               commentId = comment.node_id;
               
               // Log comment details
-              const fs = require('fs');
               fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
                 `### Retrieved Discussion Comment at ${new Date().toISOString()}\n` +
                 `- Discussion Title: ${discussion.title}\n` +
                 `- Discussion ID: ${discussionId}\n` +
                 `- Comment ID: ${commentId}\n` +
-                `- Content length: ${discussionContent.length} characters\n\n`
+                `- Content length: ${discussionContent.length} characters\n` +
+                `- Comment body preview: ${comment.body.substring(0, 100)}...\n\n`
               );
             }
             
@@ -122,74 +129,135 @@ jobs:
                 const comments = result.repository.discussion.comments.nodes;
                 
                 // Log fetched comments
-                const fs = require('fs');
                 fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
                   `- Retrieved ${comments.length} previous comments\n\n`
                 );
                 
-                // Append all previous comments to provide context
+                // Create a summary of previous comments instead of including full content
                 if (comments.length > 0) {
-                  allContent += '\n\nPrevious comments:\n';
+                  allContent += '\n\nPrevious comments summary:';
                   for (const comment of comments) {
-                    allContent += `\n@${comment.author.login} said: ${comment.body}\n`;
+                    const commentPreview = comment.body.length > 100 
+                      ? comment.body.substring(0, 100) + '...' 
+                      : comment.body;
+                    allContent += `\n@${comment.author.login} said: ${commentPreview}`;
                   }
                 }
               } catch (error) {
                 // Log error
-                const fs = require('fs');
                 fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
                   `- ❌ Error retrieving previous comments: ${error.message}\n\n`
                 );
               }
             }
             
-            core.setOutput('discussion_content', allContent);
+            // Write the full content to a file to preserve all characters exactly
+            fs.writeFileSync('content_files/full_content.txt', allContent);
+            
+            // Also create a base64 version for safe passing
+            const base64Content = Buffer.from(allContent).toString('base64');
+            fs.writeFileSync('content_files/base64_content.txt', base64Content);
+            
+            // Log the content handling details
+            fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+              `- Content written to file: content_files/full_content.txt\n` +
+              `- Base64 content written to: content_files/base64_content.txt\n` +
+              `- Content length before base64: ${allContent.length} bytes\n` +
+              `- Content length after base64: ${base64Content.length} bytes\n\n`
+            );
+            
+            // Set outputs safely
+            core.setOutput('discussion_content_base64', base64Content);
+            core.setOutput('discussion_content_file', 'content_files/full_content.txt');
             core.setOutput('discussion_id', discussionId);
             core.setOutput('comment_id', commentId);
+            
+            // Create a short safe version of the content for debugging
+            const safeContent = allContent.substring(0, 100).replace(/[^\w\s\.,]/g, '') + '...';
+            core.setOutput('discussion_content_safe', safeContent);
+      
+      - name: Prepare API call with Node.js
+        id: prepare-api
+        run: |
+          echo "### Preparing API call at $(date)" >> ${{ steps.init-log.outputs.log_file }}
+          echo "- Model: deepseek-ai/DeepSeek-R1" >> ${{ steps.init-log.outputs.log_file }}
+          
+          # Create a Node.js script for safe content processing and API payload preparation
+          cat > prepare-payload.js << 'EOF'
+          const fs = require('fs');
+          
+          // Log functions
+          function log(message) {
+            fs.appendFileSync(process.env.LOG_FILE, message + '\n');
+          }
+          
+          try {
+            // Read the base64 content and decode it
+            log('- Reading base64 content file');
+            const base64Content = fs.readFileSync('content_files/base64_content.txt', 'utf8');
+            const content = Buffer.from(base64Content, 'base64').toString('utf8');
+            
+            log(`- Successfully decoded content (${content.length} bytes)`);
+            log(`- Content preview: ${content.substring(0, 100)}...`);
+            
+            // Create the API payload
+            log('- Creating API payload');
+            const payload = {
+              model: "deepseek-ai/DeepSeek-R1",
+              messages: [
+                {
+                  role: "user",
+                  content: "Please respond to this discussion: " + content
+                }
+              ]
+            };
+            
+            // Write the payload to a file
+            log('- Writing payload to file');
+            fs.writeFileSync('content_files/payload.json', JSON.stringify(payload, null, 2));
+            
+            // Also create a minimal emergency payload as fallback
+            log('- Creating emergency fallback payload');
+            const emergencyPayload = {
+              model: "deepseek-ai/DeepSeek-R1",
+              messages: [
+                {
+                  role: "user",
+                  content: "Please provide a helpful response to a discussion about technology."
+                }
+              ]
+            };
+            
+            fs.writeFileSync('content_files/emergency_payload.json', JSON.stringify(emergencyPayload, null, 2));
+            
+            log('- Payload preparation completed successfully');
+            console.log('Payload preparation completed successfully');
+          } catch (error) {
+            log(`- ❌ Error preparing payload: ${error.message}`);
+            console.error('Error preparing payload:', error);
+            process.exit(1);
+          }
+          EOF
+          
+          # Set environment variable for the log file
+          export LOG_FILE="${{ steps.init-log.outputs.log_file }}"
+          
+          # Run the Node.js script
+          echo "- Running Node.js script to prepare payload" >> ${{ steps.init-log.outputs.log_file }}
+          node prepare-payload.js
+          
+          if [ $? -ne 0 ]; then
+            echo "- ❌ Node.js script failed" >> ${{ steps.init-log.outputs.log_file }}
+            exit 1
+          fi
+          
+          echo "- ✅ Payload preparation successful" >> ${{ steps.init-log.outputs.log_file }}
+          echo "" >> ${{ steps.init-log.outputs.log_file }}
       
       - name: Call Together AI API
         id: ai-response
         run: |
           echo "### Calling Together AI API at $(date)" >> ${{ steps.init-log.outputs.log_file }}
-          echo "- Model: deepseek-ai/DeepSeek-R1" >> ${{ steps.init-log.outputs.log_file }}
-          
-          # Create a properly escaped JSON version of the content
-          CONTENT_TO_PROCESS="${{ steps.get-content.outputs.discussion_content }}"
-          
-          # Check if content is too short
-          if [[ ${#CONTENT_TO_PROCESS} -lt 10 ]]; then
-            echo "- ⚠️ Content is very short (${#CONTENT_TO_PROCESS} characters). Adding context." >> ${{ steps.init-log.outputs.log_file }}
-            CONTENT_TO_PROCESS="This is a short message in a GitHub discussion: ${CONTENT_TO_PROCESS}"
-          fi
-          
-          echo "- Input content length: ${#CONTENT_TO_PROCESS} bytes" >> ${{ steps.init-log.outputs.log_file }}
-          
-          # Store the content in a file for processing
-          echo "$CONTENT_TO_PROCESS" > input_content.txt
-          
-          # Create a JSON payload using jq for proper escaping
-          jq -n \
-            --arg model "deepseek-ai/DeepSeek-R1" \
-            --rawfile content input_content.txt \
-            '{
-              "model": $model,
-              "messages": [
-                {
-                  "role": "user", 
-                  "content": "Please respond to this discussion: " + $content
-                }
-              ]
-            }' > payload.json
-          
-          # Validate the JSON is well-formed
-          jq '.' payload.json > /dev/null 2>&1
-          if [ $? -ne 0 ]; then
-            echo "- ⚠️ JSON validation failed, using emergency fallback" >> ${{ steps.init-log.outputs.log_file }}
-            # Emergency fallback with minimal content
-            echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Please respond to this discussion: Hello, I'm interested in discussing this topic.\"}]}" > payload.json
-          fi
-          
-          echo "- JSON payload created successfully" >> ${{ steps.init-log.outputs.log_file }}
           
           # Start timer
           START_TIME=$(date +%s)
@@ -199,62 +267,147 @@ jobs:
           RETRY_COUNT=0
           SUCCESS=false
           
+          # Create a response directory
+          mkdir -p response_files
+          
           while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ "$SUCCESS" != "true" ]; do
             if [ $RETRY_COUNT -gt 0 ]; then
               echo "- 🔄 Retry attempt $RETRY_COUNT..." >> ${{ steps.init-log.outputs.log_file }}
               sleep $(( RETRY_COUNT * 2 ))  # Progressive backoff
             fi
             
-            # Use the payload from the file instead of inline
-            RESPONSE=$(curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
+            # Verify the payload file exists
+            PAYLOAD_FILE="content_files/payload.json"
+            if [ ! -f "$PAYLOAD_FILE" ]; then
+              echo "- ❌ Payload file not found, using emergency payload" >> ${{ steps.init-log.outputs.log_file }}
+              PAYLOAD_FILE="content_files/emergency_payload.json"
+            fi
+            
+            # Log the payload content (truncated for safety)
+            echo "- Payload file: $PAYLOAD_FILE" >> ${{ steps.init-log.outputs.log_file }}
+            echo "- Payload preview: $(head -c 200 $PAYLOAD_FILE)..." >> ${{ steps.init-log.outputs.log_file }}
+            
+            # Use the payload from the file for the API call
+            echo "- Sending API request..." >> ${{ steps.init-log.outputs.log_file }}
+            RESPONSE_FILE="response_files/api_response_${RETRY_COUNT}.json"
+            
+            # Make API call and save output to a file
+            curl -s -X POST "https://api.together.xyz/v1/chat/completions" \
               -H "Authorization: Bearer ${{ secrets.TOGETHER_API_KEY }}" \
               -H "Content-Type: application/json" \
-              -d @payload.json)
+              -d @"$PAYLOAD_FILE" \
+              -o "$RESPONSE_FILE" \
+              -w "%{http_code}" > "response_files/status_${RETRY_COUNT}.txt"
             
-            # Log detailed information for debugging
-            CURL_STATUS=$?
-            echo "- Curl request completed with status: $CURL_STATUS" >> ${{ steps.init-log.outputs.log_file }}
+            # Get HTTP status code
+            HTTP_STATUS=$(cat "response_files/status_${RETRY_COUNT}.txt")
+            echo "- API request completed with HTTP status: $HTTP_STATUS" >> ${{ steps.init-log.outputs.log_file }}
             
-            # Check if the response contains an error - with improved error handling
-            ERROR_CHECK=$(echo "$RESPONSE" | jq -r 'if has("error") then .error.message else "no_error" end' 2>/dev/null || echo "json_parse_error")
-            
-            if [[ "$ERROR_CHECK" == "json_parse_error" ]]; then
-              echo "- ⚠️ API returned non-JSON response (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
-              echo "- Response excerpt: $(echo "$RESPONSE" | head -c 100)..." >> ${{ steps.init-log.outputs.log_file }}
-            elif [[ "$ERROR_CHECK" == "no_error" ]]; then
-              # First check if the response is valid JSON and has the expected structure
-              VALID_JSON=$(echo "$RESPONSE" | jq -r 'if type=="object" and has("choices") then "valid" else "invalid" end' 2>/dev/null || echo "invalid")
+            # Check HTTP status
+            if [[ "$HTTP_STATUS" != "2"* ]]; then
+              echo "- ❌ API request failed with HTTP status $HTTP_STATUS" >> ${{ steps.init-log.outputs.log_file }}
+              echo "- Response preview: $(head -c 200 "$RESPONSE_FILE")..." >> ${{ steps.init-log.outputs.log_file }}
               
-              if [[ "$VALID_JSON" == "valid" ]]; then
-                # Check specific issue: The "choices" key exists but might not be an array (causing "Cannot index string with number" error)
-                CHOICES_TYPE=$(echo "$RESPONSE" | jq -r '.choices | type' 2>/dev/null || echo "unknown")
-                
-                if [[ "$CHOICES_TYPE" != "array" ]]; then
-                  echo "- ⚠️ API returned malformed choices structure (not an array) - attempt $((RETRY_COUNT+1))" >> ${{ steps.init-log.outputs.log_file }}
-                  echo "- Choices type: $CHOICES_TYPE" >> ${{ steps.init-log.outputs.log_file }}
-                else
-                  # Then check if we can extract content safely
-                  HAS_CONTENT=$(echo "$RESPONSE" | jq -r '.choices | if length > 0 and (.[0] | has("message")) and (.[0].message | has("content")) then "has_content" else "no_content" end' 2>/dev/null || echo "error")
-                  
-                  if [[ "$HAS_CONTENT" == "has_content" ]]; then
-                    SUCCESS=true
-                    echo "- ✅ Valid API response received with proper content structure" >> ${{ steps.init-log.outputs.log_file }}
-                  else
-                    echo "- ⚠️ API returned a valid JSON but missing expected content (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
-                  fi
-                fi
-              else
-                echo "- ⚠️ API returned invalid JSON structure (attempt $((RETRY_COUNT+1)))" >> ${{ steps.init-log.outputs.log_file }}
+              # If this is the last retry and we're still failing, try the emergency payload
+              if [[ $RETRY_COUNT -eq $(($MAX_RETRIES-1)) ]]; then
+                echo "- 🔄 Final attempt with emergency payload" >> ${{ steps.init-log.outputs.log_file }}
+                PAYLOAD_FILE="content_files/emergency_payload.json"
               fi
             else
-              # Log more details about the error
-              echo "- ⚠️ API Error (attempt $((RETRY_COUNT+1))): $ERROR_CHECK" >> ${{ steps.init-log.outputs.log_file }}
-              echo "- Response excerpt: $(echo "$RESPONSE" | head -c 100)..." >> ${{ steps.init-log.outputs.log_file }}
+              # Validate the response content with Node.js for safer parsing
+              cat > validate-response.js << 'EOF'
+              const fs = require('fs');
               
-              # If this is the last retry and we're still failing, try a simplified payload
-              if [[ $RETRY_COUNT -eq $(($MAX_RETRIES-1)) ]]; then
-                echo "- 🔄 Final attempt with simplified payload" >> ${{ steps.init-log.outputs.log_file }}
-                echo "{\"model\":\"deepseek-ai/DeepSeek-R1\",\"messages\":[{\"role\":\"user\",\"content\":\"Please respond to: Simple test message\"}]}" > payload.json
+              // Arguments
+              const responseFile = process.argv[2];
+              const logFile = process.argv[3];
+              
+              // Log functions
+              function log(message) {
+                fs.appendFileSync(logFile, message + '\n');
+              }
+              
+              try {
+                log(`- Validating response file: ${responseFile}`);
+                
+                // Read the response file
+                const responseContent = fs.readFileSync(responseFile, 'utf8');
+                
+                // Try to parse as JSON
+                let response;
+                try {
+                  response = JSON.parse(responseContent);
+                  log('- Response is valid JSON');
+                } catch (parseError) {
+                  log(`- ❌ Response is not valid JSON: ${parseError.message}`);
+                  process.exit(1);
+                }
+                
+                // Check for error field
+                if (response.error) {
+                  log(`- ❌ API error: ${response.error.message || JSON.stringify(response.error)}`);
+                  process.exit(1);
+                }
+                
+                // Check for choices field
+                if (!response.choices) {
+                  log('- ❌ Response is missing choices field');
+                  process.exit(1);
+                }
+                
+                // Check if choices is an array
+                if (!Array.isArray(response.choices)) {
+                  log(`- ❌ Choices is not an array, it's a ${typeof response.choices}`);
+                  process.exit(1);
+                }
+                
+                // Check if choices has elements
+                if (response.choices.length === 0) {
+                  log('- ❌ Choices array is empty');
+                  process.exit(1);
+                }
+                
+                // Check for message and content in the first choice
+                const firstChoice = response.choices[0];
+                if (!firstChoice.message) {
+                  log('- ❌ First choice is missing message field');
+                  process.exit(1);
+                }
+                
+                if (!firstChoice.message.content) {
+                  log('- ❌ Message is missing content field');
+                  process.exit(1);
+                }
+                
+                // Extract the content
+                const content = firstChoice.message.content;
+                log(`- ✅ Successfully extracted content (${content.length} bytes)`);
+                log(`- Content preview: ${content.substring(0, 100)}...`);
+                
+                // Write the content to a separate file
+                fs.writeFileSync('response_files/content.txt', content);
+                
+                // Success - write status file for the shell script
+                fs.writeFileSync('response_files/validation_success', 'true');
+                
+                console.log('Validation successful');
+                process.exit(0);
+              } catch (error) {
+                log(`- ❌ Error validating response: ${error.message}`);
+                console.error('Error validating response:', error);
+                process.exit(1);
+              }
+              EOF
+              
+              # Run the validation script
+              node validate-response.js "$RESPONSE_FILE" "${{ steps.init-log.outputs.log_file }}"
+              
+              # Check if validation was successful
+              if [ -f "response_files/validation_success" ]; then
+                SUCCESS=true
+                echo "- ✅ Response validation successful" >> ${{ steps.init-log.outputs.log_file }}
+              else
+                echo "- ❌ Response validation failed" >> ${{ steps.init-log.outputs.log_file }}
               fi
             fi
             
@@ -267,30 +420,26 @@ jobs:
           
           echo "- API interaction completed in ${ELAPSED_TIME} seconds" >> ${{ steps.init-log.outputs.log_file }}
           
+          # Create the final response content
           if [[ "$SUCCESS" == "true" ]]; then
-            # Extract the content from the response - with added safety
-            CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content' 2>/dev/null || echo "")
-            
-            # Log API response details
-            echo "- ✅ API response successful" >> ${{ steps.init-log.outputs.log_file }}
-            echo "- Response length: ${#CONTENT} bytes" >> ${{ steps.init-log.outputs.log_file }}
-            
-            # Check if content is empty or too short
-            if [[ -z "$CONTENT" || ${#CONTENT} -lt 5 ]]; then
-              echo "- ⚠️ Response content too short or empty. Using default response." >> ${{ steps.init-log.outputs.log_file }}
-              CONTENT="I'm sorry, I couldn't generate a proper response. Please try again with more details."
+            # Use the validated content from the validation step
+            if [ -f "response_files/content.txt" ]; then
+              cat "response_files/content.txt" > response.txt
+              echo "- ✅ Using validated API response content" >> ${{ steps.init-log.outputs.log_file }}
+              echo "- Response length: $(wc -c < response.txt) bytes" >> ${{ steps.init-log.outputs.log_file }}
+            else
+              echo "- ⚠️ Validated content file not found" >> ${{ steps.init-log.outputs.log_file }}
+              echo "I apologize, but I'm currently experiencing technical difficulties. Your message has been received, and we'll address it as soon as possible." > response.txt
             fi
           else
             # Use a fallback message if all retries failed
             echo "- ❌ All API attempts failed. Using fallback message." >> ${{ steps.init-log.outputs.log_file }}
-            CONTENT="I apologize, but I'm currently experiencing technical difficulties. Your message has been received, and we'll address it as soon as possible."
-            CONTENT="${CONTENT}\n\n**Note to repository administrators**: The Together AI API request failed with an \"Invalid JSON payload\" error. This is likely due to a problem with how the discussion content is being formatted in the JSON payload. Please check the workflow logs for more details."
+            echo "I apologize, but I'm currently experiencing technical difficulties. Your message has been received, and we'll address it as soon as possible." > response.txt
+            echo "" >> response.txt
+            echo "**Note to repository administrators**: The Together AI API request failed. Please check the workflow logs for more details." >> response.txt
           fi
           
           echo "" >> ${{ steps.init-log.outputs.log_file }}
-          
-          # Save the content to a file to preserve newlines and formatting
-          echo "$CONTENT" > response.txt
           
           # Set the content as an output in a format that can be used in the next step
           echo "content<<EOF" >> $GITHUB_OUTPUT
@@ -308,25 +457,32 @@ jobs:
             const commentId = '${{ steps.get-content.outputs.comment_id }}';
             const aiResponse = `${{ steps.ai-response.outputs.content }}`;
             
-            // Validate we have a proper response to post
-            if (!aiResponse || aiResponse.trim().length < 3) {
-              core.setFailed('AI response is empty or too short to post');
-              return;
-            }
-            
+            // Log detailed information about what we're posting
             const fs = require('fs');
+            
             fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
               `### Posting AI Response at ${new Date().toISOString()}\n` +
               `- Event type: ${eventName}\n` +
               `- Discussion ID: ${discussionId}\n` +
               (commentId ? `- Comment ID: ${commentId}\n` : '') +
-              `- Response length: ${aiResponse.length} characters\n\n`
+              `- Response length: ${aiResponse.length} characters\n` +
+              `- Response preview: ${aiResponse.substring(0, 100)}...\n\n`
             );
+            
+            // Validate we have a proper response to post
+            if (!aiResponse || aiResponse.trim().length < 3) {
+              const errorMsg = 'AI response is empty or too short to post';
+              fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- ❌ Error: ${errorMsg}\n\n`);
+              core.setFailed(errorMsg);
+              return;
+            }
             
             try {
               // Add a comment with the AI response
               if (eventName === 'discussion') {
                 // Add a new comment to the discussion
+                fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Posting new comment to discussion\n`);
+                
                 function createDiscussionCommentMutation() {
                   return `
                     mutation($discussionId: ID!, $body: String!) {
@@ -353,7 +509,6 @@ jobs:
                   // First try to reply directly to the comment
                   fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', `- Attempting to reply directly to comment\n`);
                   
-                  // Create GraphQL query using a function to avoid YAML parsing issues
                   function createReplyMutation() {
                     return `
                       mutation($discussionId: ID!, $body: String!, $replyToId: ID) {
@@ -384,6 +539,9 @@ jobs:
                   
                   // Check if this is a "already in thread" error
                   const alreadyInThreadError = replyError.message.includes("Parent comment is already in a thread");
+                  fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                    `- Is "already in thread" error: ${alreadyInThreadError}\n`
+                  );
                   
                   if (alreadyInThreadError) {
                     try {
@@ -498,7 +656,8 @@ jobs:
                       }
                     } catch (parentError) {
                       fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
-                        `- ⚠️ Error finding parent: ${parentError.message}\n` +
+                        `- ❌ Error finding parent: ${parentError.message}\n` +
+                        `- Full error: ${JSON.stringify(parentError)}\n` +
                         `- Falling back to posting a new top-level comment\n`
                       );
                       
@@ -526,14 +685,40 @@ jobs:
                       );
                     }
                   } else {
-                    // For other types of errors, just fail
-                    throw replyError;
+                    // Log more details about the error
+                    fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                      `- ❓ Unknown error type, full error: ${JSON.stringify(replyError)}\n` +
+                      `- Falling back to posting a new comment\n`
+                    );
+                    
+                    // For other types of errors, post a new comment
+                    function createCommentMutation() {
+                      return `
+                        mutation($discussionId: ID!, $body: String!) {
+                          addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+                            comment {
+                              id
+                            }
+                          }
+                        `;
+                    }
+                    
+                    const fallbackResult = await github.graphql(createCommentMutation(), {
+                      discussionId: discussionId,
+                      body: aiResponse
+                    });
+                    
+                    fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
+                      `- ✅ Successfully posted fallback comment\n` +
+                      `- Comment ID: ${fallbackResult.addDiscussionComment.comment.id}\n\n`
+                    );
                   }
                 }
               }
             } catch (error) {
               fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
-                `- ❌ Error posting response: ${error.message}\n\n`
+                `- ❌ Error posting response: ${error.message}\n` +
+                `- Full error: ${JSON.stringify(error)}\n\n`
               );
               core.setFailed(`Error posting response: ${error.message}`);
             }
@@ -911,41 +1096,81 @@ jobs:
                 `\n## Workflow Execution Summary\n` +
                 `- End Time: ${new Date().toISOString()}\n` +
                 `- Run URL: https://github.com/${owner}/${repo}/actions/runs/${{ github.run_id }}\n` +
-                `- Workflow File: https://github.com/${owner}/${repo}/blob/${{ github.ref_name }}/.github/workflows/discussion-assistant.yml\n`
+                `- Workflow File: https://github.com/${owner}/${repo}/blob/main/.github/workflows/discussion-assistant.yml\n`
               );
               
               // Read the complete log file
               const logContent = fs.readFileSync('${{ steps.init-log.outputs.log_file }}', 'utf8');
               
-              // Create a new discussion with the logs
-              function createDiscussionMutation() {
-                return `
-                  mutation($input: CreateDiscussionInput!) {
-                    createDiscussion(input: $input) {
-                      discussion {
+              // Get available discussion categories
+              console.log('Fetching available discussion categories');
+              
+              const categoriesQuery = `
+                query($owner: String!, $repo: String!) {
+                  repository(owner: $owner, name: $repo) {
+                    discussionCategories(first: 10) {
+                      nodes {
                         id
-                        url
+                        name
                       }
                     }
                   }
-                `;
+                }
+              `;
+              
+              let categoryId = null;
+              
+              try {
+                const categoriesResult = await github.graphql(categoriesQuery, { owner, repo });
+                const categories = categoriesResult.repository.discussionCategories.nodes;
+                
+                console.log('Available categories:', categories.map(c => `${c.name} (${c.id})`).join(', '));
+                
+                // Find an appropriate category - prefer 'Logs' or 'General' or just use the first one
+                const logsCategory = categories.find(c => c.name.toLowerCase() === 'logs');
+                const generalCategory = categories.find(c => c.name.toLowerCase() === 'general');
+                
+                categoryId = logsCategory?.id || generalCategory?.id || categories[0]?.id;
+                
+                console.log(`Selected category: ${categoryId}`);
+              } catch (categoriesError) {
+                console.error('Error fetching categories:', categoriesError.message);
+                // Proceed without a category - will fallback to issues
               }
               
-              const result = await github.graphql(createDiscussionMutation(), {
-                input: {
-                  repositoryId: context.payload.repository.node_id,
-                  categoryId: context.payload.repository.discussion_category_node_id || "DIC_kwDOLnNa0M4CT3wz", // Use a default if not available
-                  body: logContent,
-                  title: `Analysis of workflow #${{ github.run_number }} - ${new Date().toISOString().split('T')[0]}`
+              // Create a new discussion if we have a valid category
+              if (categoryId) {
+                function createDiscussionMutation() {
+                  return `
+                    mutation($input: CreateDiscussionInput!) {
+                      createDiscussion(input: $input) {
+                        discussion {
+                          id
+                          url
+                        }
+                      }
+                    }
+                  `;
                 }
-              });
-              
-              console.log(`Created log discussion: ${result.createDiscussion.discussion.url}`);
-              return result.createDiscussion.discussion.url;
+                
+                const result = await github.graphql(createDiscussionMutation(), {
+                  input: {
+                    repositoryId: context.payload.repository.node_id,
+                    categoryId: categoryId,
+                    body: logContent,
+                    title: `Analysis of workflow #${{ github.run_number }} - ${new Date().toISOString().split('T')[0]}`
+                  }
+                });
+                
+                console.log(`Created log discussion: ${result.createDiscussion.discussion.url}`);
+                return result.createDiscussion.discussion.url;
+              } else {
+                throw new Error('No valid discussion category found');
+              }
             } catch (error) {
               console.error(`Error creating log discussion: ${error.message}`);
               
-              // If we can't create a discussion through GraphQL, try to create an issue instead
+              // If we can't create a discussion through GraphQL, create an issue instead
               try {
                 const fs = require('fs');
                 const logContent = fs.readFileSync('${{ steps.init-log.outputs.log_file }}', 'utf8');
