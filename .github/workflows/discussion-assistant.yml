@@ -637,7 +637,8 @@ jobs:
                               id
                             }
                           }
-                        `;
+                        }
+                      `;
                     }
                     
                     const fallbackResult = await github.graphql(createCommentMutation(), {
@@ -963,9 +964,23 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            const analysis = `${{ steps.analyze-logs.outputs.analysis }}`;
             
+            // Read the analysis from the file instead of directly from output
             const fs = require('fs');
+            let analysis = "";
+            
+            try {
+              // Use file access instead of direct variable substitution to avoid syntax errors
+              if (fs.existsSync('workflow_analysis.txt')) {
+                analysis = fs.readFileSync('workflow_analysis.txt', 'utf8');
+              } else {
+                analysis = "Workflow improvement suggestions";
+              }
+            } catch (readError) {
+              console.error('Error reading analysis file:', readError);
+              analysis = "Workflow improvement suggestions";
+            }
+            
             fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
               `### Creating Improvement Issue at ${new Date().toISOString()}\n`
             );
