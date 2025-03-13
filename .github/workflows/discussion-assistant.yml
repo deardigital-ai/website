@@ -990,8 +990,65 @@ jobs:
               echo "- ⚠️ Analysis too short or empty. No suggestions available." >> ${{ steps.init-log.outputs.log_file }}
               echo "has_suggestions=false" >> $GITHUB_OUTPUT
             else
-              # Save the analysis to a file
-              echo "$ANALYSIS" > workflow_analysis.txt
+              # Process the content to convert <think> blocks to markdown quotes
+              echo "- Processing analysis, converting thinking blocks to markdown..." >> ${{ steps.init-log.outputs.log_file }}
+              
+              # First save the original analysis content
+              echo "$ANALYSIS" > workflow_analysis_original.txt
+              
+              # Use awk to extract thinking content and convert it to markdown quotes
+              awk '
+                BEGIN { in_think = 0; output = ""; thinking = ""; }
+                
+                # Start of thinking block
+                /<think>/ { 
+                  in_think = 1; 
+                  thinking = ""; 
+                  next; 
+                }
+                
+                # End of thinking block
+                /<\/think>/ { 
+                  in_think = 0;
+                  # If there was thinking content, format it as markdown quote
+                  if (thinking != "") {
+                    # Split thinking into lines and prefix each with >
+                    split(thinking, lines, "\n");
+                    output = output "\n\n> **Thinking process:**\n";
+                    for (i in lines) {
+                      if (lines[i] != "") {
+                        output = output "> " lines[i] "\n";
+                      } else {
+                        output = output ">\n";
+                      }
+                    }
+                    output = output "\n";
+                  }
+                  next;
+                }
+                
+                # Inside thinking block - collect content
+                in_think == 1 { 
+                  thinking = thinking (thinking=="" ? "" : "\n") $0;
+                  next;
+                }
+                
+                # Normal content outside thinking blocks
+                in_think == 0 { 
+                  output = output (output=="" ? "" : "\n") $0;
+                }
+                
+                END { print output; }
+              ' workflow_analysis_original.txt > workflow_analysis.txt
+              
+              # Check if processing was successful (non-empty file)
+              if [ ! -s "workflow_analysis.txt" ]; then
+                # If processing failed, use the original content
+                cp workflow_analysis_original.txt workflow_analysis.txt
+                echo "- ⚠️ Analysis processing failed, using original content" >> ${{ steps.init-log.outputs.log_file }}
+              else
+                echo "- ✅ Analysis processed successfully: removed <think> tags and formatted thinking as quotes" >> ${{ steps.init-log.outputs.log_file }}
+              fi
               
               # More robust check for meaningful suggestions
               if grep -q -E 'improvement|issue|suggestion|recommend|fix|enhance|optimize|refactor|update|upgrade|modify' workflow_analysis.txt; then
