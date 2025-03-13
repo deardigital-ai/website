@@ -518,18 +518,47 @@ jobs:
               if [ -s "$RESPONSE_FILE" ] && jq -e '.error' "$RESPONSE_FILE" > /dev/null 2>&1; then
                 ERROR_TYPE=$(jq -r '.error.type // "unknown"' "$RESPONSE_FILE")
                 ERROR_MSG=$(jq -r '.error.message // "Unknown API error"' "$RESPONSE_FILE")
+                ERROR_CODE=$(jq -r '.error.code // "none"' "$RESPONSE_FILE")
                 echo "- Error type: $ERROR_TYPE" >> ${{ steps.init-log.outputs.log_file }}
                 echo "- Error message: $ERROR_MSG" >> ${{ steps.init-log.outputs.log_file }}
+                echo "- Error code: $ERROR_CODE" >> ${{ steps.init-log.outputs.log_file }}
                 
-                # Customize retry strategy based on error type
-                if [[ "$ERROR_TYPE" == *"rate_limit"* ]]; then
-                  echo "- Rate limit error, using longer backoff" >> ${{ steps.init-log.outputs.log_file }}
-                  sleep $((5 + RETRY_COUNT * 10))  # Longer backoff for rate limits
+                # Enhanced error detection for common API issues
+                if [[ "$ERROR_TYPE" == *"rate_limit"* || "$ERROR_MSG" == *"rate limit"* ]]; then
+                  echo "- 🔄 Rate limit error detected, using longer backoff" >> ${{ steps.init-log.outputs.log_file }}
+                  echo "- Troubleshooting: Rate limits may be resolved by reducing request frequency or contacting Together for quota increase" >> ${{ steps.init-log.outputs.log_file }}
+                  sleep $((5 + RETRY_COUNT * 15))  # Longer backoff for rate limits
                 elif [[ "$ERROR_TYPE" == *"server"* || "$HTTP_STATUS" == "5"* ]]; then
-                  echo "- Server error, retrying with exponential backoff" >> ${{ steps.init-log.outputs.log_file }}
+                  echo "- 🔄 Server error detected, retrying with exponential backoff" >> ${{ steps.init-log.outputs.log_file }}
+                  echo "- Troubleshooting: Server errors are typically temporary, but persistent issues should be reported to Together" >> ${{ steps.init-log.outputs.log_file }}
+                  sleep $((2 ** RETRY_COUNT + RANDOM % 3))
+                elif [[ "$ERROR_TYPE" == *"invalid_request"* || "$ERROR_MSG" == *"Invalid"* ]]; then
+                  echo "- ⚠️ Invalid request error detected" >> ${{ steps.init-log.outputs.log_file }}
+                  echo "- Troubleshooting: Check payload format and content length. Payload preview:" >> ${{ steps.init-log.outputs.log_file }}
+                  echo "$(head -c 500 "$PAYLOAD_FILE")..." >> ${{ steps.init-log.outputs.log_file }}
+                elif [[ "$ERROR_TYPE" == *"auth"* || "$ERROR_MSG" == *"auth"* || "$ERROR_CODE" == *"auth"* ]]; then
+                  echo "- ❌ Authentication error detected" >> ${{ steps.init-log.outputs.log_file }}
+                  echo "- Troubleshooting: Verify API key is correctly set and has valid permissions" >> ${{ steps.init-log.outputs.log_file }}
+                  # Auth errors are unlikely to be resolved with retries but we'll still try
+                else
+                  echo "- ⚠️ Unrecognized error type, using standard retry approach" >> ${{ steps.init-log.outputs.log_file }}
                 fi
+                
+                # Save error details for analysis
+                mkdir -p error_logs
+                jq '.' "$RESPONSE_FILE" > "error_logs/error_response_${RETRY_COUNT}.json" 2>/dev/null || cp "$RESPONSE_FILE" "error_logs/error_response_${RETRY_COUNT}.txt"
+                echo "- Saved detailed error information to error_logs/error_response_${RETRY_COUNT}.json" >> ${{ steps.init-log.outputs.log_file }}
+                
               else
+                echo "- ⚠️ HTTP error without detailed API error information" >> ${{ steps.init-log.outputs.log_file }}
                 echo "- Response preview: $(head -c 200 "$RESPONSE_FILE" 2>/dev/null || echo "<empty response>")..." >> ${{ steps.init-log.outputs.log_file }}
+                echo "- Troubleshooting: Check network connectivity and API endpoint status" >> ${{ steps.init-log.outputs.log_file }}
+                
+                # Log more details about the request for debugging
+                echo "- Request details:" >> ${{ steps.init-log.outputs.log_file }}
+                echo "  - Payload file: $PAYLOAD_FILE" >> ${{ steps.init-log.outputs.log_file }}
+                echo "  - Timeout setting: $TIMEOUT seconds" >> ${{ steps.init-log.outputs.log_file }}
+                echo "  - OS type: $OSTYPE" >> ${{ steps.init-log.outputs.log_file }}
               fi
               
               # If this is the last retry and we're still failing, try the emergency payload
@@ -687,8 +716,50 @@ jobs:
           fi
           
           # Also save response as base64 for safe handling
-          base64 response.txt > response_files/response_base64.txt
-          
+          # Use portable base64 encoding that works on both macOS and Linux
+          echo "- Creating base64 encoded response for safe handling..." >> ${{ steps.init-log.outputs.log_file }}
+          if [ ! -f "response.txt" ]; then
+            echo "- ⚠️ Response file not found, creating empty file" >> ${{ steps.init-log.outputs.log_file }}
+            echo "No response content available" > response.txt
+          fi
+
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS requires -i flag for input file
+            echo "- Detected macOS, using base64 with -i flag" >> ${{ steps.init-log.outputs.log_file }}
+            base64 -i response.txt > response_files/response_base64.txt
+            BASE64_EXIT_CODE=$?
+          else
+            # Linux and other systems can use standard syntax
+            echo "- Using standard base64 encoding" >> ${{ steps.init-log.outputs.log_file }}
+            base64 response.txt > response_files/response_base64.txt
+            BASE64_EXIT_CODE=$?
+          fi
+
+          # Check if base64 encoding was successful
+          if [ $BASE64_EXIT_CODE -ne 0 ]; then
+            echo "- ⚠️ Base64 encoding failed with exit code $BASE64_EXIT_CODE, using alternative method" >> ${{ steps.init-log.outputs.log_file }}
+            # Fallback to Node.js for base64 encoding
+            node -e "
+              const fs = require('fs');
+              try {
+                const content = fs.readFileSync('response.txt', 'utf8');
+                const base64Content = Buffer.from(content).toString('base64');
+                fs.writeFileSync('response_files/response_base64.txt', base64Content);
+                console.log('Base64 encoding completed with Node.js');
+              } catch (error) {
+                console.error('Error during Node.js base64 encoding:', error.message);
+                // Create empty base64 file to prevent further errors
+                fs.writeFileSync('response_files/response_base64.txt', '');
+              }
+            "
+            echo "- Attempted fallback to Node.js for base64 encoding" >> ${{ steps.init-log.outputs.log_file }}
+          else
+            echo "- ✅ Base64 encoding completed successfully" >> ${{ steps.init-log.outputs.log_file }}
+            # Log the size of the base64 encoded file
+            BASE64_SIZE=$(wc -c < response_files/response_base64.txt)
+            echo "- Base64 encoded size: $BASE64_SIZE bytes" >> ${{ steps.init-log.outputs.log_file }}
+          fi
+
           echo "" >> ${{ steps.init-log.outputs.log_file }}
           
           # Set the content as an output in a format that can be used in the next step
