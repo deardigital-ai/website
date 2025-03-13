@@ -361,8 +361,66 @@ jobs:
           if [[ "$SUCCESS" == "true" ]]; then
             # Use the validated content from the validation step
             if [ -f "response_files/content.txt" ]; then
-              cat "response_files/content.txt" > response.txt
-              echo "- ✅ Using validated API response content" >> ${{ steps.init-log.outputs.log_file }}
+              # Process the content to convert <think> blocks to markdown quotes
+              echo "- Processing response, converting thinking blocks to markdown..." >> ${{ steps.init-log.outputs.log_file }}
+              
+              # Use awk to extract thinking content and convert it to markdown quotes
+              awk '
+                BEGIN { in_think = 0; output = ""; thinking = ""; }
+                
+                # Start of thinking block
+                /<think>/ { 
+                  in_think = 1; 
+                  thinking = ""; 
+                  next; 
+                }
+                
+                # End of thinking block
+                /<\/think>/ { 
+                  in_think = 0;
+                  # If there was thinking content, format it as markdown quote
+                  if (thinking != "") {
+                    # Split thinking into lines and prefix each with >
+                    split(thinking, lines, "\n");
+                    output = output "\n\n> **Thinking process:**\n";
+                    for (i in lines) {
+                      if (lines[i] != "") {
+                        output = output "> " lines[i] "\n";
+                      } else {
+                        output = output ">\n";
+                      }
+                    }
+                    output = output "\n";
+                  }
+                  next;
+                }
+                
+                # Inside thinking block - collect content
+                in_think == 1 { 
+                  thinking = thinking (thinking=="" ? "" : "\n") $0;
+                  next;
+                }
+                
+                # Normal content outside thinking blocks
+                in_think == 0 { 
+                  output = output (output=="" ? "" : "\n") $0;
+                }
+                
+                END { print output; }
+              ' response_files/content.txt > response_files/processed_content.txt
+              
+              # Use the processed content or fall back to original if processing failed
+              if [ -s "response_files/processed_content.txt" ]; then
+                cat "response_files/processed_content.txt" > response.txt
+                CONTENT_SIZE=$(wc -c < response.txt)
+                echo "- ✅ Response processed successfully: removed <think> tags and formatted thinking as quotes" >> ${{ steps.init-log.outputs.log_file }}
+              else
+                # If processing failed, use the original content
+                cat "response_files/content.txt" > response.txt
+                echo "- ⚠️ Response processing failed, using original content" >> ${{ steps.init-log.outputs.log_file }}
+              fi
+              
+              echo "- ✅ Using validated and processed API response content" >> ${{ steps.init-log.outputs.log_file }}
               echo "- Response length: $(wc -c < response.txt) bytes" >> ${{ steps.init-log.outputs.log_file }}
             else
               echo "- ⚠️ Validated content file not found" >> ${{ steps.init-log.outputs.log_file }}
