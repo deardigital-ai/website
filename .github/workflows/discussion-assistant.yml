@@ -776,11 +776,13 @@ jobs:
             const eventName = context.eventName;
             const discussionId = '${{ steps.get-content.outputs.discussion_id }}';
             const commentId = '${{ steps.get-content.outputs.comment_id }}';
-            const aiResponse = `${{ steps.ai-response.outputs.content }}`;
+            
+            // Read the AI response from file instead of embedding it directly in the script
+            // This avoids JavaScript template literal parsing issues with code blocks
+            const fs = require('fs');
+            const aiResponse = fs.readFileSync('response.txt', 'utf8');
             
             // Log detailed information about what we're posting
-            const fs = require('fs');
-            
             fs.appendFileSync('${{ steps.init-log.outputs.log_file }}', 
               `### Posting AI Response at ${new Date().toISOString()}\n` +
               `- Event type: ${eventName}\n` +
