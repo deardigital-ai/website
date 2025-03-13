@@ -1,4 +1,4 @@
-name: Build and Deploy Jekyll Site
+name: Deploy Static HTML Site
 
 on:
   push:
@@ -8,32 +8,16 @@ on:
       - 'build/**'  # Only trigger on changes in build directory
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: build  # Set default working directory to build folder
-
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-    - name: Set up Ruby
-      uses: ruby/setup-ruby@v1
-      with:
-        ruby-version: '3.2'
-        bundler-cache: true
-        working-directory: build
-
-    - name: Install Dependencies
-      run: bundle install
-
-    - name: Build Site
-      run: bundle exec jekyll build
-
-    - name: Deploy
+    - name: Deploy to GitHub Pages
       uses: peaceiris/actions-gh-pages@v3
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./build/_site  # Updated path to built site
+        publish_dir: ./build  # Deploy the entire build directory
         publish_branch: gh-pages 
