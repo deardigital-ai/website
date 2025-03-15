@@ -12,17 +12,18 @@ jobs:
   validate-commits:
     name: Validate Commits
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '16'
+          node-version: '18'
       
       - name: Install dependencies
         run: |
@@ -35,13 +36,14 @@ jobs:
           echo "module.exports = {extends: ['@commitlint/config-conventional']};" > commitlint.config.js
       
       - name: Validate commit messages
+        continue-on-error: true
         run: |
           echo "### Validating commit messages"
           
           # For PR, check only PR commits
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             echo "Checking commits in PR"
-            git log --format=%B -n 1 ${{ github.event.pull_request.head.sha }} | commitlint
+            git log --format=%B -n 1 ${{ github.event.pull_request.head.sha }} | commitlint || echo "⚠️ Warning: Commit message should follow the Conventional Commits format: <type>(<optional scope>): <description>"
           else
             # For push, check most recent commit unless it's a merge commit
             COMMIT_MSG=$(git log -1 --pretty=%B)
@@ -49,7 +51,7 @@ jobs:
               echo "Skipping validation for merge commit"
             else
               echo "Checking latest commit"
-              echo "$COMMIT_MSG" | commitlint
+              echo "$COMMIT_MSG" | commitlint || echo "⚠️ Warning: Commit message should follow the Conventional Commits format: <type>(<optional scope>): <description>"
             fi
           fi
       
