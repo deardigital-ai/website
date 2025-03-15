@@ -18,15 +18,16 @@ jobs:
   validate-workflows:
     name: Validate Workflow Files
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '16'
+          node-version: '18'
       
       - name: Install actionlint
         run: |
@@ -175,7 +176,7 @@ jobs:
           cat validation_report.md
       
       - name: Upload validation report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: workflow-validation-report
           path: validation_report.md 
